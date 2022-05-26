@@ -1,5 +1,5 @@
 project: rnshah9/frida-gum
-target: frida-gum
+target: gum-graft
 tests: null
 
 cmds:
