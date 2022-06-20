@@ -1,6 +1,5 @@
-project: rnshah9/frida-gum
+project: frida-gum
 target: gum-graft
-tests: null
 
 cmds:
   - cmd: /repo/build/tools/gum-graft @@
