@@ -47,7 +47,9 @@ typedef guint GumBranchHint;
 typedef struct _GumIA32CpuContext GumIA32CpuContext;
 typedef struct _GumX64CpuContext GumX64CpuContext;
 typedef struct _GumArmCpuContext GumArmCpuContext;
+typedef union _GumArmVectorReg GumArmVectorReg;
 typedef struct _GumArm64CpuContext GumArm64CpuContext;
+typedef union _GumArm64VectorReg GumArm64VectorReg;
 typedef struct _GumMipsCpuContext GumMipsCpuContext;
 typedef guint GumRelocationScenario;
 
@@ -164,7 +166,8 @@ enum _GumCpuFeatures
   GUM_CPU_THUMB_INTERWORK = 1 << 1,
   GUM_CPU_VFP2            = 1 << 2,
   GUM_CPU_VFP3            = 1 << 3,
-  GUM_CPU_PTRAUTH         = 1 << 4,
+  GUM_CPU_VFPD32          = 1 << 4,
+  GUM_CPU_PTRAUTH         = 1 << 5,
 };
 
 enum _GumInstructionEncoding
@@ -234,11 +237,18 @@ struct _GumX64CpuContext
   guint64 rax;
 };
 
+union _GumArmVectorReg
+{
+  guint8 q[16];
+  gdouble d[2];
+  gfloat s[4];
+};
+
 struct _GumArmCpuContext
 {
-  guint32 cpsr;
   guint32 pc;
   guint32 sp;
+  guint32 cpsr;
 
   guint32 r8;
   guint32 r9;
@@ -246,19 +256,34 @@ struct _GumArmCpuContext
   guint32 r11;
   guint32 r12;
 
+  GumArmVectorReg v[16];
+
+  guint32 _padding;
+
   guint32 r[8];
   guint32 lr;
+};
+
+union _GumArm64VectorReg
+{
+  guint8 q[16];
+  gdouble d;
+  gfloat s;
+  guint16 h;
+  guint8 b;
 };
 
 struct _GumArm64CpuContext
 {
   guint64 pc;
   guint64 sp;
+  guint64 nzcv;
 
   guint64 x[29];
   guint64 fp;
   guint64 lr;
-  guint8 q[128];
+
+  GumArm64VectorReg v[32];
 };
 
 struct _GumMipsCpuContext
@@ -374,23 +399,23 @@ enum _GumRelocationScenario
 #define GUM_MAX_WORST_CASE_INFO_SIZE 128
 
 #define GUM_MAX_LISTENERS_PER_FUNCTION 2
-#define GUM_MAX_LISTENER_DATA        512
+#define GUM_MAX_LISTENER_DATA       1024
 
 #define GUM_MAX_THREAD_RANGES 2
 
 #if GLIB_SIZEOF_VOID_P == 8
 #define GUM_CPU_MODE CS_MODE_64
-#define GUM_THUNK
+#define GUM_X86_THUNK
 #else
 #define GUM_CPU_MODE CS_MODE_32
-#define GUM_THUNK GUM_FASTCALL
+#define GUM_X86_THUNK GUM_FASTCALL
 #endif
 #if !defined (G_OS_WIN32) && GLIB_SIZEOF_VOID_P == 8
-# define GUM_THUNK_REG_ARG0 GUM_REG_XDI
-# define GUM_THUNK_REG_ARG1 GUM_REG_XSI
+# define GUM_X86_THUNK_REG_ARG0 GUM_X86_XDI
+# define GUM_X86_THUNK_REG_ARG1 GUM_X86_XSI
 #else
-# define GUM_THUNK_REG_ARG0 GUM_REG_XCX
-# define GUM_THUNK_REG_ARG1 GUM_REG_XDX
+# define GUM_X86_THUNK_REG_ARG0 GUM_X86_XCX
+# define GUM_X86_THUNK_REG_ARG1 GUM_X86_XDX
 #endif
 #define GUM_RED_ZONE_SIZE 128
 

@@ -214,6 +214,10 @@ struct _DyldImageInfo64
   guint64 image_file_mod_date;
 };
 
+#ifndef PROC_PIDREGIONPATHINFO2
+# define PROC_PIDREGIONPATHINFO2 22
+#endif
+
 #ifndef PROC_INFO_CALL_PIDINFO
 
 # define PROC_INFO_CALL_PIDINFO 0x2
@@ -350,7 +354,7 @@ gum_process_is_debugger_attached (void)
   int mib[4];
   struct kinfo_proc info;
   size_t size;
-  int result;
+  G_GNUC_UNUSED int result;
 
   mib[0] = CTL_KERN;
   mib[1] = KERN_PROC;
@@ -891,7 +895,7 @@ gum_darwin_check_xnu_version (guint major,
   {
     char buf[256] = { 0, };
     size_t size;
-    int res;
+    G_GNUC_UNUSED int res;
     const char * version_str;
 
     size = sizeof (buf);
@@ -1814,10 +1818,15 @@ gum_darwin_fill_file_mapping (gint pid,
                               GumFileMapping * file,
                               struct proc_regionwithpathinfo * region)
 {
-  gint retval, len;
+  gint flavor, retval, len;
 
-  retval = __proc_info (PROC_INFO_CALL_PIDINFO, pid, PROC_PIDREGIONPATHINFO,
-      (uint64_t) address, region, sizeof (struct proc_regionwithpathinfo));
+  if (gum_darwin_check_xnu_version (2782, 1, 97))
+    flavor = PROC_PIDREGIONPATHINFO2;
+  else
+    flavor = PROC_PIDREGIONPATHINFO;
+
+  retval = __proc_info (PROC_INFO_CALL_PIDINFO, pid, flavor, (uint64_t) address,
+      region, sizeof (struct proc_regionwithpathinfo));
 
   if (retval == -1)
     return FALSE;
@@ -2362,15 +2371,17 @@ gum_darwin_parse_native_thread_state (const GumDarwinNativeThreadState * ts,
 #elif defined (HAVE_ARM)
   guint n;
 
-  ctx->cpsr = ts->__cpsr;
   ctx->pc = ts->__pc;
   ctx->sp = ts->__sp;
+  ctx->cpsr = ts->__cpsr;
 
   ctx->r8 = ts->__r[8];
   ctx->r9 = ts->__r[9];
   ctx->r10 = ts->__r[10];
   ctx->r11 = ts->__r[11];
   ctx->r12 = ts->__r[12];
+
+  memset (ctx->v, 0, sizeof (ctx->v));
 
   for (n = 0; n != G_N_ELEMENTS (ctx->r); n++)
     ctx->r[n] = ts->__r[n];
@@ -2394,6 +2405,8 @@ gum_darwin_parse_native_thread_state (const GumDarwinNativeThreadState * ts,
 
   for (n = 0; n != G_N_ELEMENTS (ctx->x); n++)
     ctx->x[n] = ts->__x[n];
+
+  memset (ctx->v, 0, sizeof (ctx->v));
 #endif
 }
 
@@ -2470,9 +2483,9 @@ gum_darwin_unparse_native_thread_state (const GumCpuContext * ctx,
 #elif defined (HAVE_ARM)
   guint n;
 
-  ts->__cpsr = ctx->cpsr;
   ts->__pc = ctx->pc;
   ts->__sp = ctx->sp;
+  ts->__cpsr = ctx->cpsr;
 
   ts->__r[8] = ctx->r8;
   ts->__r[9] = ctx->r9;

@@ -25,6 +25,7 @@ typedef guint GumArm64IndexMode;
 struct _GumArm64Writer
 {
   volatile gint ref_count;
+  gboolean flush_on_destroy;
 
   GumOS target_os;
   GumPtrauthSupport ptrauth_support;
@@ -142,6 +143,8 @@ GUM_API guint gum_arm64_writer_put_ldr_reg_ref (GumArm64Writer * self,
     arm64_reg reg);
 GUM_API void gum_arm64_writer_put_ldr_reg_value (GumArm64Writer * self,
     guint ref, GumAddress value);
+GUM_API gboolean gum_arm64_writer_put_ldr_reg_reg (GumArm64Writer * self,
+    arm64_reg dst_reg, arm64_reg src_reg);
 GUM_API gboolean gum_arm64_writer_put_ldr_reg_reg_offset (GumArm64Writer * self,
     arm64_reg dst_reg, arm64_reg src_reg, gsize src_offset);
 GUM_API gboolean gum_arm64_writer_put_ldr_reg_reg_offset_mode (
@@ -152,6 +155,8 @@ GUM_API gboolean gum_arm64_writer_put_ldrsw_reg_reg_offset (
     gsize src_offset);
 GUM_API gboolean gum_arm64_writer_put_adrp_reg_address (GumArm64Writer * self,
     arm64_reg reg, GumAddress address);
+GUM_API gboolean gum_arm64_writer_put_str_reg_reg (GumArm64Writer * self,
+    arm64_reg src_reg, arm64_reg dst_reg);
 GUM_API gboolean gum_arm64_writer_put_str_reg_reg_offset (GumArm64Writer * self,
     arm64_reg src_reg, arm64_reg dst_reg, gsize dst_offset);
 GUM_API gboolean gum_arm64_writer_put_str_reg_reg_offset_mode (
@@ -165,6 +170,10 @@ GUM_API gboolean gum_arm64_writer_put_stp_reg_reg_reg_offset (
     gssize dst_offset, GumArm64IndexMode mode);
 GUM_API gboolean gum_arm64_writer_put_mov_reg_reg (GumArm64Writer * self,
     arm64_reg dst_reg, arm64_reg src_reg);
+GUM_API void gum_arm64_writer_put_mov_reg_nzcv (GumArm64Writer * self,
+    arm64_reg reg);
+GUM_API void gum_arm64_writer_put_mov_nzcv_reg (GumArm64Writer * self,
+    arm64_reg reg);
 GUM_API gboolean gum_arm64_writer_put_uxtw_reg_reg (GumArm64Writer * self,
     arm64_reg dst_reg, arm64_reg src_reg);
 GUM_API gboolean gum_arm64_writer_put_add_reg_reg_imm (GumArm64Writer * self,

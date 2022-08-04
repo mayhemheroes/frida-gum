@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2010-2021 Ole André Vadla Ravnås <oleavr@nowsecure.com>
+ * Copyright (C) 2010-2022 Ole André Vadla Ravnås <oleavr@nowsecure.com>
  * Copyright (C)      2019 Jon Wilson <jonwilson@zepler.net>
  *
  * Licence: wxWindows Library Licence, Version 3.1
@@ -37,6 +37,9 @@ static void gum_arm_writer_put_argument_list_teardown (GumArmWriter * self,
     guint n_args);
 static void gum_arm_writer_put_call_address_body (GumArmWriter * self,
     GumAddress address);
+static gboolean gum_arm_writer_put_vector_push_or_pop_range (
+    GumArmWriter * self, guint32 insn_template, arm_reg first_reg,
+    arm_reg last_reg);
 
 static gboolean gum_arm_writer_try_commit_label_refs (GumArmWriter * self);
 static void gum_arm_writer_maybe_commit_literals (GumArmWriter * self);
@@ -81,6 +84,7 @@ gum_arm_writer_init (GumArmWriter * writer,
                      gpointer code_address)
 {
   writer->ref_count = 1;
+  writer->flush_on_destroy = TRUE;
 
   writer->target_os = gum_process_get_native_os ();
   writer->cpu_features = GUM_CPU_THUMB_INTERWORK;
@@ -113,7 +117,8 @@ gum_arm_writer_has_literal_refs (GumArmWriter * self)
 void
 gum_arm_writer_clear (GumArmWriter * writer)
 {
-  gum_arm_writer_flush (writer);
+  if (writer->flush_on_destroy)
+    gum_arm_writer_flush (writer);
 
   if (gum_arm_writer_has_label_defs (writer))
     gum_metal_hash_table_unref (writer->label_defs);
@@ -352,11 +357,11 @@ gum_arm_writer_put_argument_list_setup (GumArmWriter * self,
       {
         gum_arm_writer_put_ldr_reg_address (self, ARM_REG_R0,
             arg->value.address);
-        gum_arm_writer_put_push_registers (self, 1, ARM_REG_R0);
+        gum_arm_writer_put_push_regs (self, 1, ARM_REG_R0);
       }
       else
       {
-        gum_arm_writer_put_push_registers (self, 1, arg->value.reg);
+        gum_arm_writer_put_push_regs (self, 1, arg->value.reg);
       }
     }
   }
@@ -424,10 +429,10 @@ gum_arm_writer_put_call_address_body (GumArmWriter * self,
   else
   {
     gum_arm_writer_put_add_reg_reg_imm (self, ARM_REG_LR, ARM_REG_PC, 3 * 4);
-    gum_arm_writer_put_push_registers (self, 2, ARM_REG_R0, ARM_REG_PC);
+    gum_arm_writer_put_push_regs (self, 2, ARM_REG_R0, ARM_REG_PC);
     gum_arm_writer_put_ldr_reg_address (self, ARM_REG_R0, address);
     gum_arm_writer_put_str_reg_reg_offset (self, ARM_REG_R0, ARM_REG_SP, 4);
-    gum_arm_writer_put_pop_registers (self, 2, ARM_REG_R0, ARM_REG_PC);
+    gum_arm_writer_put_pop_regs (self, 2, ARM_REG_R0, ARM_REG_PC);
   }
 }
 
@@ -441,10 +446,10 @@ gum_arm_writer_put_branch_address (GumArmWriter * self,
   }
   else
   {
-    gum_arm_writer_put_push_registers (self, 2, ARM_REG_R0, ARM_REG_PC);
+    gum_arm_writer_put_push_regs (self, 2, ARM_REG_R0, ARM_REG_PC);
     gum_arm_writer_put_ldr_reg_address (self, ARM_REG_R0, address);
     gum_arm_writer_put_str_reg_reg_offset (self, ARM_REG_R0, ARM_REG_SP, 4);
-    gum_arm_writer_put_pop_registers (self, 2, ARM_REG_R0, ARM_REG_PC);
+    gum_arm_writer_put_pop_regs (self, 2, ARM_REG_R0, ARM_REG_PC);
   }
 }
 
@@ -578,9 +583,9 @@ gum_arm_writer_put_ret (GumArmWriter * self)
 }
 
 void
-gum_arm_writer_put_push_registers (GumArmWriter * self,
-                                   guint n,
-                                   ...)
+gum_arm_writer_put_push_regs (GumArmWriter * self,
+                              guint n,
+                              ...)
 {
   va_list args;
   guint16 mask;
@@ -606,9 +611,9 @@ gum_arm_writer_put_push_registers (GumArmWriter * self,
 }
 
 void
-gum_arm_writer_put_pop_registers (GumArmWriter * self,
-                                  guint n,
-                                  ...)
+gum_arm_writer_put_pop_regs (GumArmWriter * self,
+                             guint n,
+                             ...)
 {
   va_list args;
   guint16 mask;
@@ -634,6 +639,71 @@ gum_arm_writer_put_pop_registers (GumArmWriter * self,
 }
 
 gboolean
+gum_arm_writer_put_vpush_range (GumArmWriter * self,
+                                arm_reg first_reg,
+                                arm_reg last_reg)
+{
+  return gum_arm_writer_put_vector_push_or_pop_range (self, 0x0d2d0a00,
+      first_reg, last_reg);
+}
+
+gboolean
+gum_arm_writer_put_vpop_range (GumArmWriter * self,
+                               arm_reg first_reg,
+                               arm_reg last_reg)
+{
+  return gum_arm_writer_put_vector_push_or_pop_range (self, 0x0cbd0a00,
+      first_reg, last_reg);
+}
+
+static gboolean
+gum_arm_writer_put_vector_push_or_pop_range (GumArmWriter * self,
+                                             guint32 insn_template,
+                                             arm_reg first_reg,
+                                             arm_reg last_reg)
+{
+  GumArmRegInfo rf, rl;
+  guint8 count, imm8;
+
+  gum_arm_reg_describe (first_reg, &rf);
+  gum_arm_reg_describe (last_reg, &rl);
+
+  if (rl.width != rf.width || rl.index < rf.index)
+    return FALSE;
+
+  if (rf.width == 128)
+  {
+    rf.width = 64;
+    rf.index *= 2;
+    rf.meta = GUM_ARM_MREG_D0 + rf.index;
+
+    rl.width = 64;
+    rl.index *= 2;
+    if (rl.index % 2 == 0)
+      rl.index++;
+    rl.meta = GUM_ARM_MREG_D0 + rl.index;
+  }
+
+  count = rl.index - rf.index + 1;
+  if (rf.width == 64)
+  {
+    if (count > 16)
+      return FALSE;
+    imm8 = 2 * count;
+  }
+  else
+  {
+    imm8 = count;
+  }
+
+  gum_arm_writer_put_instruction (self, insn_template | (0xe << 28) |
+      ((rf.index >> 4) << 22) | ((rf.index & GUM_INT4_MASK) << 12) |
+      ((rf.width == 64) << 8) | imm8);
+
+  return TRUE;
+}
+
+gboolean
 gum_arm_writer_put_ldr_reg_address (GumArmWriter * self,
                                     arm_reg reg,
                                     GumAddress address)
@@ -654,6 +724,14 @@ gum_arm_writer_put_ldr_reg_u32 (GumArmWriter * self,
   gum_arm_writer_put_instruction (self, 0xe51f0000 | (ri.index << 12));
 
   return TRUE;
+}
+
+gboolean
+gum_arm_writer_put_ldr_reg_reg (GumArmWriter * self,
+                                arm_reg dst_reg,
+                                arm_reg src_reg)
+{
+  return gum_arm_writer_put_ldr_reg_reg_offset (self, dst_reg, src_reg, 0);
 }
 
 gboolean
@@ -702,6 +780,14 @@ gum_arm_writer_put_ldmia_reg_mask (GumArmWriter * self,
 
   gum_arm_reg_describe (reg, &ri);
   gum_arm_writer_put_instruction (self, 0xe8b00000 | (ri.index << 16) | mask);
+}
+
+gboolean
+gum_arm_writer_put_str_reg_reg (GumArmWriter * self,
+                                arm_reg src_reg,
+                                arm_reg dst_reg)
+{
+  return gum_arm_writer_put_str_reg_reg_offset (self, src_reg, dst_reg, 0);
 }
 
 gboolean
@@ -957,14 +1043,9 @@ gum_arm_writer_put_ands_reg_reg_imm (GumArmWriter * self,
                                      guint32 imm_val)
 {
   GumArmRegInfo rd, rs;
-  gboolean is_noop;
 
   gum_arm_reg_describe (dst_reg, &rd);
   gum_arm_reg_describe (src_reg, &rs);
-
-  is_noop = dst_reg == src_reg && (imm_val & GUM_INT8_MASK) == 0;
-  if (is_noop)
-    return;
 
   gum_arm_writer_put_instruction (self, 0xe2100000 | (rd.index << 12) |
       (rs.index << 16) | (imm_val & GUM_INT8_MASK));

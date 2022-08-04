@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020 Ole André Vadla Ravnås <oleavr@nowsecure.com>
+ * Copyright (C) 2020-2022 Ole André Vadla Ravnås <oleavr@nowsecure.com>
  * Copyright (C) 2021 EvilWind <evilwind@protonmail.com>
  *
  * Licence: wxWindows Library Licence, Version 3.1
@@ -156,12 +156,21 @@ _gum_quick_instruction_new (JSContext * ctx,
   }
   else
   {
+    cs_insn * insn_copy;
+    cs_detail * detail_copy;
+
     g_assert (capstone != 0);
-    v->insn = cs_malloc (capstone);
-    memcpy ((void *) v->insn, insn, sizeof (cs_insn));
-    if (insn->detail != NULL)
-      memcpy (v->insn->detail, insn->detail, sizeof (cs_detail));
+
+    insn_copy = cs_malloc (capstone);
+    detail_copy = insn_copy->detail;
+    memcpy (insn_copy, insn, sizeof (cs_insn));
+    insn_copy->detail = detail_copy;
+    if (detail_copy != NULL)
+      memcpy (detail_copy, insn->detail, sizeof (cs_detail));
+
+    v->insn = insn_copy;
   }
+  v->owns_memory = insn != NULL;
   v->target = target;
 
   JS_SetOpaque (wrapper, v);
@@ -243,7 +252,7 @@ GUMJS_DEFINE_FINALIZER (gumjs_instruction_finalize)
   if (v == NULL)
     return;
 
-  if (v->insn != NULL)
+  if (v->owns_memory && v->insn != NULL)
     cs_free ((cs_insn *) v->insn, 1);
 
   g_slice_free (GumQuickInstructionValue, v);

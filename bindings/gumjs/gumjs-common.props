@@ -52,6 +52,7 @@
     <ClInclude Include="gumquickthread.h" />
     <ClInclude Include="gumquickmodule.h" />
     <ClInclude Include="gumquickfile.h" />
+    <ClInclude Include="gumquickchecksum.h" />
     <ClInclude Include="gumquickstream.h" />
     <ClInclude Include="gumquicksocket.h" />
     <ClInclude Include="gumquickdatabase.h" />
@@ -78,6 +79,7 @@
     <ClCompile Include="gumquickthread.c" />
     <ClCompile Include="gumquickmodule.c" />
     <ClCompile Include="gumquickfile.c" />
+    <ClCompile Include="gumquickchecksum.c" />
     <ClCompile Include="gumquickstream.c" />
     <ClCompile Include="gumquicksocket.c" />
     <ClCompile Include="gumquickdatabase.c" />
@@ -111,6 +113,7 @@
     <ClInclude Include="gumv8thread.h" />
     <ClInclude Include="gumv8module.h" />
     <ClInclude Include="gumv8file.h" />
+    <ClInclude Include="gumv8checksum.h" />
     <ClInclude Include="gumv8stream.h" />
     <ClInclude Include="gumv8socket.h" />
     <ClInclude Include="gumv8database.h" />
@@ -139,6 +142,7 @@
     <ClCompile Include="gumv8thread.cpp" />
     <ClCompile Include="gumv8module.cpp" />
     <ClCompile Include="gumv8file.cpp" />
+    <ClCompile Include="gumv8checksum.cpp" />
     <ClCompile Include="gumv8stream.cpp" />
     <ClCompile Include="gumv8socket.cpp" />
     <ClCompile Include="gumv8database.cpp" />
@@ -204,7 +208,7 @@ REM. &gt; $(IntDir)gumjs\bindings.stamp
       <Outputs>$(IntDir)gumjs\runtime.stamp;$(IntDir)gumjs\gumquickscript-runtime.h;$(IntDir)gumjs\gumquickscript-objc.h;$(IntDir)gumjs\gumquickscript-swift.h;$(IntDir)gumjs\gumquickscript-java.h;$(IntDir)gumjs\gumv8script-runtime.h;$(IntDir)gumjs\gumv8script-objc.h;$(IntDir)gumjs\gumv8script-swift.h;$(IntDir)gumjs\gumv8script-java.h;$(IntDir)gumjs\gumcmodule-runtime.h</Outputs>
       <Message>Generating runtime</Message>
       <Command>mkdir $(IntDir)gumjs 2&gt;NUL
-generate-runtime.py $(PlatformShortName) $(ProjectDir) ..\..\gum $(SolutionDir)build\sdk-windows\$(Platform)-$(Configuration)\include\capstone $(SolutionDir)build\sdk-windows\$(Platform)-$(Configuration)\lib\tcc\include $(SolutionDir)build\tmp-windows\Win32-$(Configuration)\gumquickcompile\gumquickcompile.exe $(IntDir)gumjs || exit 1
+generate-runtime.py $(PlatformShortName) little $(ProjectDir) ..\..\gum $(SolutionDir)build\sdk-windows\$(Platform)-$(Configuration)\include\capstone $(SolutionDir)build\sdk-windows\$(Platform)-$(Configuration)\lib\tcc\include $(SolutionDir)build\tmp-windows\Win32-$(Configuration)\gumquickcompile\gumquickcompile.exe $(IntDir)gumjs || exit 1
 REM. &gt; $(IntDir)gumjs\runtime.stamp
 </Command>
       <LinkObjects>false</LinkObjects>

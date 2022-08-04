@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2014-2021 Ole André Vadla Ravnås <oleavr@nowsecure.com>
+ * Copyright (C) 2014-2022 Ole André Vadla Ravnås <oleavr@nowsecure.com>
  * Copyright (C) 2021 EvilWind <evilwind@protonmail.com>
  *
  * Licence: wxWindows Library Licence, Version 3.1
@@ -173,11 +173,17 @@ _gum_v8_instruction_new (csh capstone,
   else
   {
     g_assert (capstone != 0);
-    value->insn = cs_malloc (capstone);
-    memcpy ((void *) value->insn, insn, sizeof (cs_insn));
-    if (insn->detail != NULL)
-      memcpy (value->insn->detail, insn->detail, sizeof (cs_detail));
+
+    cs_insn * insn_copy = cs_malloc (capstone);
+    cs_detail * detail_copy = insn_copy->detail;
+    memcpy (insn_copy, insn, sizeof (cs_insn));
+    insn_copy->detail = detail_copy;
+    if (detail_copy != NULL)
+      memcpy (detail_copy, insn->detail, sizeof (cs_detail));
+
+    value->insn = insn_copy;
   }
+  value->owns_memory = TRUE;
   value->target = target;
 
   value->object->SetWeak (value, gum_v8_instruction_on_weak_notify,
@@ -220,6 +226,7 @@ gum_v8_instruction_alloc (GumV8Instruction * module)
   auto value = g_slice_new (GumV8InstructionValue);
   value->object = nullptr;
   value->insn = NULL;
+  value->owns_memory = FALSE;
   value->target = NULL;
   value->module = module;
 
@@ -232,7 +239,7 @@ gum_v8_instruction_alloc (GumV8Instruction * module)
 static void
 gum_v8_instruction_dispose (GumV8InstructionValue * self)
 {
-  if (self->insn != NULL)
+  if (self->owns_memory && self->insn != NULL)
   {
     cs_free ((cs_insn *) self->insn, 1);
     self->insn = NULL;

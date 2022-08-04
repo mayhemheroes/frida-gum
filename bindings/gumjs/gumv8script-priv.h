@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015-2021 Ole André Vadla Ravnås <oleavr@nowsecure.com>
+ * Copyright (C) 2015-2022 Ole André Vadla Ravnås <oleavr@nowsecure.com>
  *
  * Licence: wxWindows Library Licence, Version 3.1
  */
@@ -8,6 +8,7 @@
 #define __GUM_V8_SCRIPT_PRIV_H__
 
 #include "gumv8apiresolver.h"
+#include "gumv8checksum.h"
 #include "gumv8cmodule.h"
 #include "gumv8coderelocator.h"
 #include "gumv8codewriter.h"
@@ -32,8 +33,31 @@
 # include "gumv8database.h"
 #endif
 
-typedef guint GumScriptState;
+#include <v8/v8-inspector.h>
+
+enum GumScriptState
+{
+  GUM_SCRIPT_STATE_CREATED,
+  GUM_SCRIPT_STATE_LOADING,
+  GUM_SCRIPT_STATE_LOADED,
+  GUM_SCRIPT_STATE_UNLOADING,
+  GUM_SCRIPT_STATE_UNLOADED
+};
+
+enum GumV8InspectorState
+{
+  GUM_V8_RUNNING,
+  GUM_V8_DEBUGGING,
+  GUM_V8_PAUSED
+};
+
 struct GumESProgram;
+
+class GumInspectorClient;
+class GumInspectorChannel;
+
+typedef std::map<guint, std::unique_ptr<GumInspectorChannel>>
+    GumInspectorChannelMap;
 
 struct _GumV8Script
 {
@@ -41,6 +65,9 @@ struct _GumV8Script
 
   gchar * name;
   gchar * source;
+  GBytes * snapshot;
+  v8::StartupData * snapshot_blob;
+  v8::StartupData snapshot_blob_storage;
   GMainContext * main_context;
   GumV8ScriptBackend * backend;
 
@@ -54,6 +81,7 @@ struct _GumV8Script
   GumV8Process process;
   GumV8Thread thread;
   GumV8File file;
+  GumV8Checksum checksum;
   GumV8Stream stream;
   GumV8Socket socket;
 #ifdef HAVE_SQLITE
@@ -73,6 +101,22 @@ struct _GumV8Script
   GumScriptMessageHandler message_handler;
   gpointer message_handler_data;
   GDestroyNotify message_handler_data_destroy;
+
+  GMutex inspector_mutex;
+  GCond inspector_cond;
+  volatile GumV8InspectorState inspector_state;
+  int context_group_id;
+
+  GumScriptDebugMessageHandler debug_handler;
+  gpointer debug_handler_data;
+  GDestroyNotify debug_handler_data_destroy;
+  GMainContext * debug_handler_context;
+  GQueue debug_messages;
+  volatile bool flush_scheduled;
+
+  v8_inspector::V8Inspector * inspector;
+  GumInspectorClient * inspector_client;
+  GumInspectorChannelMap * channels;
 };
 
 struct GumESProgram
@@ -89,8 +133,7 @@ struct GumESAsset
 {
   gint ref_count;
 
-  gchar * name;
-  gchar * alias;
+  const gchar * name;
 
   gpointer data;
   gsize data_size;

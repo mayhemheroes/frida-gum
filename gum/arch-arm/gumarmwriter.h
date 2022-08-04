@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2010-2021 Ole André Vadla Ravnås <oleavr@nowsecure.com>
+ * Copyright (C) 2010-2022 Ole André Vadla Ravnås <oleavr@nowsecure.com>
  *
  * Licence: wxWindows Library Licence, Version 3.1
  */
@@ -21,6 +21,7 @@ typedef struct _GumArmWriter GumArmWriter;
 struct _GumArmWriter
 {
   volatile gint ref_count;
+  gboolean flush_on_destroy;
 
   GumOS target_os;
   GumCpuFeatures cpu_features;
@@ -90,15 +91,19 @@ GUM_API void gum_arm_writer_put_bl_reg (GumArmWriter * self, arm_reg reg);
 GUM_API void gum_arm_writer_put_blx_reg (GumArmWriter * self, arm_reg reg);
 GUM_API void gum_arm_writer_put_ret (GumArmWriter * self);
 
-GUM_API void gum_arm_writer_put_push_registers (GumArmWriter * self, guint n,
-    ...);
-GUM_API void gum_arm_writer_put_pop_registers (GumArmWriter * self, guint n,
-    ...);
+GUM_API void gum_arm_writer_put_push_regs (GumArmWriter * self, guint n, ...);
+GUM_API void gum_arm_writer_put_pop_regs (GumArmWriter * self, guint n, ...);
+GUM_API gboolean gum_arm_writer_put_vpush_range (GumArmWriter * self,
+    arm_reg first_reg, arm_reg last_reg);
+GUM_API gboolean gum_arm_writer_put_vpop_range (GumArmWriter * self,
+    arm_reg first_reg, arm_reg last_reg);
 
 GUM_API gboolean gum_arm_writer_put_ldr_reg_address (GumArmWriter * self,
     arm_reg reg, GumAddress address);
 GUM_API gboolean gum_arm_writer_put_ldr_reg_u32 (GumArmWriter * self,
     arm_reg reg, guint32 val);
+GUM_API gboolean gum_arm_writer_put_ldr_reg_reg (GumArmWriter * self,
+    arm_reg dst_reg, arm_reg src_reg);
 GUM_API gboolean gum_arm_writer_put_ldr_reg_reg_offset (GumArmWriter * self,
     arm_reg dst_reg, arm_reg src_reg, gssize src_offset);
 GUM_API gboolean gum_arm_writer_put_ldr_cond_reg_reg_offset (
@@ -106,9 +111,10 @@ GUM_API gboolean gum_arm_writer_put_ldr_cond_reg_reg_offset (
     gssize src_offset);
 GUM_API void gum_arm_writer_put_ldmia_reg_mask (GumArmWriter * self,
     arm_reg reg, guint16 mask);
-GUM_API gboolean gum_arm_writer_put_str_reg_reg_offset (
-    GumArmWriter * self, arm_reg src_reg, arm_reg dst_reg,
-    gssize dst_offset);
+GUM_API gboolean gum_arm_writer_put_str_reg_reg (GumArmWriter * self,
+    arm_reg src_reg, arm_reg dst_reg);
+GUM_API gboolean gum_arm_writer_put_str_reg_reg_offset (GumArmWriter * self,
+    arm_reg src_reg, arm_reg dst_reg, gssize dst_offset);
 GUM_API gboolean gum_arm_writer_put_str_cond_reg_reg_offset (
     GumArmWriter * self, arm_cc cc, arm_reg src_reg,
     arm_reg dst_reg, gssize dst_offset);

@@ -8,11 +8,9 @@
 
 #include "testutil.h"
 
+#include "lowlevelhelpers.h"
 #ifdef HAVE_GUMJS
 # include "gumscriptbackend.h"
-#endif
-#ifdef HAVE_I386
-# include "lowlevelhelpers.h"
 #endif
 #include "valgrind.h"
 
@@ -128,9 +126,7 @@ main (gint argc, gchar * argv[])
   gum_init ();
 
   _test_util_init ();
-#ifdef HAVE_I386
   lowlevel_helpers_init ();
-#endif
 
 #ifdef HAVE_ASAN
   {
@@ -188,9 +184,9 @@ main (gint argc, gchar * argv[])
 #if !defined (HAVE_QNX) && !(defined (HAVE_ANDROID) && defined (HAVE_ARM64))
   TESTLIST_REGISTER (symbolutil);
 #endif
-  TESTLIST_REGISTER (codewriter);
+  TESTLIST_REGISTER (x86writer);
   if (cs_support (CS_ARCH_X86))
-    TESTLIST_REGISTER (relocator);
+    TESTLIST_REGISTER (x86relocator);
   TESTLIST_REGISTER (armwriter);
   if (cs_support (CS_ARCH_ARM))
     TESTLIST_REGISTER (armrelocator);

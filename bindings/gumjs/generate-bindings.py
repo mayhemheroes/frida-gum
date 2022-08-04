@@ -142,6 +142,7 @@ typedef {impl_struct_name} {alias_struct_name}Impl;
 #define _{alias_function_prefix}_release{persistent_suffix} _{wrapper_function_prefix}_release{persistent_suffix}
 #define _{alias_function_prefix}_init _{wrapper_function_prefix}_init
 #define _{alias_function_prefix}_finalize _{wrapper_function_prefix}_finalize
+#define _{alias_function_prefix}_gc_mark _{wrapper_function_prefix}_gc_mark
 #define _{alias_function_prefix}_reset _{wrapper_function_prefix}_reset
 """.format(**params).split("\n")
 
@@ -334,12 +335,13 @@ def generate_quick_wrapper_code(component, api):
             elif method.return_type == "GumAddress":
                 lines.append("  return _gum_quick_native_pointer_new (ctx, GSIZE_TO_POINTER (result), core);")
             elif method.return_type == "cs_insn *":
-                if component.flavor == "x86":
-                    target = "GSIZE_TO_POINTER (result->address)"
-                else:
-                    target = "self->impl->input_start + (result->address -\n            (self->impl->input_pc - self->impl->inpos))"
-                    if component.flavor == "thumb":
-                        target = "GSIZE_TO_POINTER (GPOINTER_TO_SIZE ({0}) | 1)".format(target)
+                target = "\n".join([
+                    "self->impl->input_start + (result->address -",
+                    "          (self->impl->input_pc -",
+                    "            (self->impl->input_cur - self->impl->input_start)))",
+                ])
+                if component.flavor == "thumb":
+                    target = "GSIZE_TO_POINTER (GPOINTER_TO_SIZE ({0}) | 1)".format(target)
                 lines.extend([
                     "  if (result != NULL)",
                     "  {",
@@ -380,6 +382,7 @@ def generate_quick_wrapper_code(component, api):
         "{",
         "  .class_name = \"{0}\",".format(component.gumjs_class_name),
         "  .finalizer = {0}_finalize,".format(prefix),
+        "  .gc_mark = {0}_gc_mark,".format(prefix),
         "};",
         "",
         "static const JSCFunctionListEntry {0}_entries[] =".format(prefix),
@@ -523,6 +526,7 @@ G_GNUC_INTERNAL gboolean _gum_quick_{flavor}_{name}_get (JSContext * ctx, JSValu
 
 G_GNUC_INTERNAL void _gum_quick_{flavor}_{name}_init ({wrapper_struct_name} * self, JSContext * ctx, {module_struct_name} * parent);
 G_GNUC_INTERNAL void _gum_quick_{flavor}_{name}_finalize ({wrapper_struct_name} * self);
+G_GNUC_INTERNAL void _gum_quick_{flavor}_{name}_gc_mark ({wrapper_struct_name} * self);
 G_GNUC_INTERNAL void _gum_quick_{flavor}_{name}_reset ({wrapper_struct_name} * self, {impl_struct_name} * impl);
 """
     return template.format(**params)
@@ -693,6 +697,7 @@ GUMJS_DEFINE_CONSTRUCTOR ({gumjs_function_prefix}_construct)
   writer = {wrapper_function_prefix}_alloc (ctx, parent);
   writer->wrapper = wrapper;
   writer->impl = {impl_function_prefix}_new (code_address);
+  writer->impl->flush_on_destroy = FALSE;
   if (pc_specified)
     writer->impl->pc = pc;
 
@@ -717,6 +722,8 @@ GUMJS_DEFINE_FUNCTION ({gumjs_function_prefix}_reset)
   if (!{gumjs_function_prefix}_parse_constructor_args (args, &code_address, &pc,
       &pc_specified))
     return JS_EXCEPTION;
+
+  {impl_function_prefix}_flush (self->impl);
 
   {impl_function_prefix}_reset (self->impl, code_address);
   if (pc_specified)
@@ -782,6 +789,8 @@ GUMJS_DEFINE_FUNCTION ({gumjs_function_prefix}_dispose)
   if (!_{wrapper_function_prefix}_get (ctx, this_val, parent, &self))
     return JS_EXCEPTION;
 
+  {impl_function_prefix}_flush (self->impl);
+
   {wrapper_function_prefix}_dispose (self);
 
   return JS_UNDEFINED;
@@ -796,6 +805,10 @@ GUMJS_DEFINE_FINALIZER ({gumjs_function_prefix}_finalize)
     return;
 
   {wrapper_function_prefix}_free (w);
+}}
+
+GUMJS_DEFINE_GC_MARKER ({gumjs_function_prefix}_gc_mark)
+{{
 }}
 
 GUMJS_DEFINE_FUNCTION ({gumjs_function_prefix}_flush)
@@ -1099,6 +1112,17 @@ GUMJS_DEFINE_FINALIZER ({gumjs_function_prefix}_finalize)
   {wrapper_function_prefix}_free (r);
 }}
 
+GUMJS_DEFINE_GC_MARKER ({gumjs_function_prefix}_gc_mark)
+{{
+  {wrapper_struct_name} * r;
+
+  r = JS_GetOpaque (val, gumjs_get_parent_module (core)->{flavor}_relocator_class);
+  if (r == NULL)
+    return;
+
+  JS_MarkValue (rt, r->input->wrapper, mark_func);
+}}
+
 GUMJS_DEFINE_FUNCTION ({gumjs_function_prefix}_read_one)
 {{
   {module_struct_name} * parent;
@@ -1162,12 +1186,9 @@ GUMJS_DEFINE_GETTER ({gumjs_function_prefix}_get_eoi)
 }}
 """
 
-    if component.flavor == "x86":
-        target = "GSIZE_TO_POINTER (self->input->insn->address)"
-    else:
-        target = "self->impl->input_start +\n        (self->input->insn->address -\n            (self->impl->input_pc - self->impl->inpos))"
-        if component.flavor == "thumb":
-            target = "GSIZE_TO_POINTER (GPOINTER_TO_SIZE ({0}) | 1)".format(target)
+    target = "self->impl->input_cur - self->input->insn->size"
+    if component.flavor == "thumb":
+        target = "GSIZE_TO_POINTER (GPOINTER_TO_SIZE ({0}) | 1)".format(target)
 
     params = {
         "writer_wrapper_struct_name": component.wrapper_struct_name.replace("Relocator", "Writer"),
@@ -1347,12 +1368,13 @@ def generate_v8_wrapper_code(component, api):
             elif method.return_type == "GumAddress":
                 lines.append("  info.GetReturnValue ().Set (_gum_v8_native_pointer_new (GSIZE_TO_POINTER (result), core));")
             elif method.return_type == "cs_insn *":
-                if component.flavor == "x86":
-                    target = "GSIZE_TO_POINTER (result->address)"
-                else:
-                    target = "self->impl->input_start + (result->address - (self->impl->input_pc - self->impl->inpos))"
-                    if component.flavor == "thumb":
-                        target = "GSIZE_TO_POINTER (GPOINTER_TO_SIZE ({0}) | 1)".format(target)
+                target = "\n".join([
+                    "self->impl->input_start + (result->address -",
+                    "          (self->impl->input_pc -",
+                    "            (self->impl->input_cur - self->impl->input_start)))",
+                ])
+                if component.flavor == "thumb":
+                    target = "GSIZE_TO_POINTER (GPOINTER_TO_SIZE ({0}) | 1)".format(target)
                 lines.extend([
                     "  if (result != NULL)",
                     "  {",
@@ -1715,6 +1737,7 @@ GUMJS_DEFINE_CONSTRUCTOR ({gumjs_function_prefix}_construct)
     {wrapper_function_prefix}_mark_weak (writer);
 
     writer->impl = {impl_function_prefix}_new (code_address);
+    writer->impl->flush_on_destroy = FALSE;
     if (pc_specified)
       writer->impl->pc = pc;
   }}
@@ -1733,6 +1756,8 @@ GUMJS_DEFINE_CLASS_METHOD ({gumjs_function_prefix}_reset, {wrapper_struct_name})
   if (!{gumjs_function_prefix}_parse_constructor_args (args, &code_address, &pc,
       &pc_specified))
     return;
+
+  {impl_function_prefix}_flush (self->impl);
 
   {impl_function_prefix}_reset (self->impl, code_address);
   if (pc_specified)
@@ -1783,6 +1808,9 @@ static gboolean
 
 GUMJS_DEFINE_CLASS_METHOD ({gumjs_function_prefix}_dispose, {wrapper_struct_name})
 {{
+  if (self->impl != NULL)
+    {impl_function_prefix}_flush (self->impl);
+
   {wrapper_function_prefix}_dispose (self);
 }}
 
@@ -2148,12 +2176,9 @@ static const GumV8Property {gumjs_function_prefix}_values[] =
 }};
 """
 
-    if component.flavor == "x86":
-        target = "GSIZE_TO_POINTER (self->input->insn->address)"
-    else:
-        target = "self->impl->input_start + (self->input->insn->address - (self->impl->input_pc - self->impl->inpos))"
-        if component.flavor == "thumb":
-            target = "GSIZE_TO_POINTER (GPOINTER_TO_SIZE ({0}) | 1)".format(target)
+    target = "self->impl->input_cur - self->input->insn->size"
+    if component.flavor == "thumb":
+        target = "GSIZE_TO_POINTER (GPOINTER_TO_SIZE ({0}) | 1)".format(target)
 
     params = {
         "writer_impl_struct_name": to_camel_case('gum_{0}_writer'.format(component.flavor), start_high=True),
@@ -2204,7 +2229,7 @@ arch_names = {
 
 writer_enums = {
     "x86": [
-        ("x86_register", "GumCpuReg", "GUM_REG_", [
+        ("x86_register", "GumX86Reg", "GUM_X86_", [
             "xax", "xcx", "xdx", "xbx", "xsp", "xbp", "xsi", "xdi",
             "eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi",
             "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi",
@@ -2219,7 +2244,7 @@ writer_enums = {
         ("x86_branch_hint", "GumBranchHint", "GUM_", [
             "no-hint", "likely", "unlikely",
         ]),
-        ("x86_pointer_target", "GumPtrTarget", "GUM_PTR_", [
+        ("x86_pointer_target", "GumX86PtrTarget", "GUM_X86_PTR_", [
             "byte", "dword", "qword",
         ]),
     ],
@@ -2228,6 +2253,16 @@ writer_enums = {
             "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7",
             "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15",
             "sp", "lr", "sb", "sl", "fp", "ip", "pc",
+            "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9",
+            "s10", "s11", "s12", "s13", "s14", "s15", "s16", "s17", "s18", "s19",
+            "s20", "s21", "s22", "s23", "s24", "s25", "s26", "s27", "s28", "s29",
+            "s30", "s31",
+            "d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7", "d8", "d9",
+            "d10", "d11", "d12", "d13", "d14", "d15", "d16", "d17", "d18", "d19",
+            "d20", "d21", "d22", "d23", "d24", "d25", "d26", "d27", "d28", "d29",
+            "d30", "d31",
+            "q0", "q1", "q2", "q3", "q4", "q5", "q6", "q7", "q8", "q9",
+            "q10", "q11", "q12", "q13", "q14", "q15",
         ]),
         ("arm_system_register", "arm_sysreg", "ARM_SYSREG_", [
             "apsr-nzcvq",
@@ -2603,7 +2638,7 @@ interface {class_name}Options {{
      * temporary location that later gets mapped into memory at the
      * intended memory location.
      */
-    pc?: NativePointer;
+    pc?: NativePointer | undefined;
 }}""".format(**params).split("\n"))
 
         if flavor != "thumb":
@@ -2927,7 +2962,7 @@ class Component(object):
         self.gumjs_field_prefix = "{0}_{1}".format(flavor, name)
         self.gumjs_function_prefix = "gumjs_{0}_{1}".format(flavor, name)
         self.module_struct_name = to_camel_case("gum_{0}_code_{1}".format(namespace, name), start_high=True)
-        self.register_type = "GumCpuReg" if arch == "x86" else arch + "_reg"
+        self.register_type = "GumX86Reg" if arch == "x86" else arch + "_reg"
 
 class Api(object):
     def __init__(self, static_methods, instance_methods):
@@ -2989,10 +3024,10 @@ class MethodArgument(object):
         name_raw = None
         converter = None
 
-        if type in ("GumCpuReg", "arm_reg", "arm64_reg", "mips_reg"):
+        if type in ("GumX86Reg", "arm_reg", "arm64_reg", "mips_reg"):
             self.type_raw = "const gchar *"
             self.type_format = "s"
-            self.type_ts = to_camel_case("x86_register" if type == "GumCpuReg" else type.replace("_reg", "_register"), start_high=True)
+            self.type_ts = to_camel_case("x86_register" if type == "GumX86Reg" else type.replace("_reg", "_register"), start_high=True)
             converter = "register"
         elif type in ("arm_sysreg",):
             self.type_raw = "const gchar *"
@@ -3066,7 +3101,7 @@ class MethodArgument(object):
             self.type_format = "s"
             self.type_ts = "X86BranchHint"
             converter = "branch_hint"
-        elif type == "GumPtrTarget":
+        elif type == "GumX86PtrTarget":
             self.type_raw = "const gchar *"
             self.type_format = "s"
             self.type_ts = "X86PointerTarget"

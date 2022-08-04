@@ -54,8 +54,12 @@ TESTLIST_BEGIN (script)
     TESTENTRY (return_value_can_be_read)
     TESTENTRY (return_value_can_be_replaced)
     TESTENTRY (return_address_can_be_read)
-    TESTENTRY (register_can_be_read)
-    TESTENTRY (register_can_be_written)
+    TESTENTRY (general_purpose_register_can_be_read)
+    TESTENTRY (general_purpose_register_can_be_written)
+    TESTENTRY (vector_register_can_be_read)
+    TESTENTRY (double_register_can_be_read)
+    TESTENTRY (float_register_can_be_read)
+    TESTENTRY (status_register_can_be_read)
     TESTENTRY (system_error_can_be_read_from_interceptor_listener)
     TESTENTRY (system_error_can_be_read_from_replacement_function)
     TESTENTRY (system_error_can_be_replaced_from_interceptor_listener)
@@ -349,8 +353,46 @@ TESTLIST_BEGIN (script)
     TESTENTRY (instruction_can_be_relocated)
   TESTGROUP_END ()
 
+  TESTGROUP_BEGIN ("CodeWriter")
+    TESTENTRY (code_writer_should_not_flush_on_gc)
+    TESTENTRY (code_writer_should_flush_on_reset)
+    TESTENTRY (code_writer_should_flush_on_dispose)
+  TESTGROUP_END ()
+
+  TESTGROUP_BEGIN ("CodeRelocator")
+    TESTENTRY (code_relocator_should_expose_input_instruction)
+  TESTGROUP_END ()
+
   TESTGROUP_BEGIN ("File")
+    TESTENTRY (whole_file_can_be_read_as_bytes)
+    TESTENTRY (whole_file_can_be_read_as_text)
+    TESTENTRY (whole_file_can_be_read_as_text_with_validation)
+    TESTENTRY (whole_file_can_be_written_from_bytes)
+    TESTENTRY (whole_file_can_be_written_from_text)
+    TESTENTRY (file_can_be_read_as_bytes_in_one_go)
+    TESTENTRY (file_can_be_read_as_bytes_in_chunks)
+    TESTENTRY (file_can_be_read_as_text_in_one_go)
+    TESTENTRY (file_can_be_read_as_text_in_chunks)
+    TESTENTRY (file_can_be_read_as_text_with_validation)
+    TESTENTRY (file_can_be_read_line_by_line)
+    TESTENTRY (file_can_be_read_line_by_line_with_validation)
+    TESTENTRY (file_position_can_be_queried)
+    TESTENTRY (file_position_can_be_updated_to_absolute_position_implicitly)
+    TESTENTRY (file_position_can_be_updated_to_absolute_position_explicitly)
+    TESTENTRY (file_position_can_be_updated_to_relative_position_from_current)
+    TESTENTRY (file_position_can_be_updated_to_relative_position_from_end)
     TESTENTRY (file_can_be_written_to)
+  TESTGROUP_END ()
+
+  TESTGROUP_BEGIN ("Checksum")
+    TESTENTRY (md5_can_be_computed_for_stream)
+    TESTENTRY (md5_can_be_computed_for_string)
+    TESTENTRY (md5_can_be_computed_for_bytes)
+    TESTENTRY (sha1_can_be_computed_for_string)
+    TESTENTRY (sha256_can_be_computed_for_string)
+    TESTENTRY (sha384_can_be_computed_for_string)
+    TESTENTRY (sha512_can_be_computed_for_string)
+    TESTENTRY (requesting_unknown_checksum_for_string_should_throw)
   TESTGROUP_END ()
 
 #ifdef HAVE_SQLITE
@@ -380,6 +422,13 @@ TESTLIST_BEGIN (script)
     TESTENTRY (call_can_be_probed)
 #endif
     TESTENTRY (stalker_events_can_be_parsed)
+  TESTGROUP_END ()
+
+  TESTGROUP_BEGIN ("ESM")
+    TESTENTRY (esm_in_root_should_be_supported)
+    TESTENTRY (esm_in_subdir_should_be_supported)
+    TESTENTRY (esm_referencing_subdir_should_be_supported)
+    TESTENTRY (esm_referencing_parent_should_be_supported)
   TESTGROUP_END ()
 
   TESTENTRY (script_can_be_compiled_to_bytecode)
@@ -482,14 +531,16 @@ static int compare_measurements (gconstpointer element_a,
 
 static gboolean check_exception_handling_testable (void);
 
-static void on_script_message (GumScript * script, const gchar * message,
-    GBytes * data, gpointer user_data);
+static void on_script_message (const gchar * message, GBytes * data,
+    gpointer user_data);
 static void on_incoming_debug_message (GumInspectorServer * server,
     const gchar * message, gpointer user_data);
 static void on_outgoing_debug_message (const gchar * message,
     gpointer user_data);
 
 static int target_function_int (int arg);
+G_GNUC_UNUSED static float target_function_float (float arg);
+G_GNUC_UNUSED static double target_function_double (double arg);
 static const guint8 * target_function_base_plus_offset (const guint8 * base,
     int offset);
 static const gchar * target_function_string (const gchar * arg);
@@ -804,6 +855,8 @@ TESTCASE (instruction_can_be_parsed)
   EXPECT_SEND_MESSAGE_WITH ("\"fmov\"");
   EXPECT_SEND_MESSAGE_WITH ("\"undefined\"");
   EXPECT_SEND_MESSAGE_WITH ("1");
+#else
+  g_print ("<skipping, missing code for current architecture> ");
 #endif
 }
 
@@ -852,6 +905,8 @@ TESTCASE (instruction_can_be_generated)
       "const cw = new X86Writer(code);"
       "cw.putMovRegU32('rax', 42);");
   EXPECT_ERROR_MESSAGE_WITH (ANY_LINE_NUMBER, "Error: invalid argument");
+#else
+  g_print ("<skipping, missing code for current architecture> ");
 #endif
 }
 
@@ -918,6 +973,309 @@ TESTCASE (instruction_can_be_relocated)
   EXPECT_SEND_MESSAGE_WITH ("42");
 
   EXPECT_NO_MESSAGES ();
+#else
+  g_print ("<skipping, missing code for current architecture> ");
+#endif
+}
+
+TESTCASE (code_writer_should_not_flush_on_gc)
+{
+#if defined (HAVE_I386)
+  COMPILE_AND_LOAD_SCRIPT (
+      "const page = Memory.alloc(Process.pageSize);"
+      "let writer = new X86Writer(page);"
+      "writer.putJmpShortLabel('later');"
+      "writer.putBreakpoint();"
+      "writer.putLabel('later');"
+      "writer.putRet();"
+      "Memory.protect(page, Process.pageSize, '---');"
+      "writer = null;"
+      "gc();");
+  EXPECT_NO_MESSAGES ();
+#elif defined (HAVE_ARM)
+  COMPILE_AND_LOAD_SCRIPT (
+      "const page = Memory.alloc(Process.pageSize);"
+      "let writer = new ArmWriter(page);"
+      "writer.putBLabel('later');"
+      "writer.putBrkImm(42);"
+      "writer.putLabel('later');"
+      "writer.putMovRegReg('pc', 'lr');"
+      "Memory.protect(page, Process.pageSize, '---');"
+      "writer = null;"
+      "gc();");
+  EXPECT_NO_MESSAGES ();
+
+  COMPILE_AND_LOAD_SCRIPT (
+      "const page = Memory.alloc(Process.pageSize);"
+      "let writer = new ThumbWriter(page);"
+      "writer.putBLabel('later');"
+      "writer.putBkptImm(42);"
+      "writer.putLabel('later');"
+      "writer.putPopRegs(['pc']);"
+      "Memory.protect(page, Process.pageSize, '---');"
+      "writer = null;"
+      "gc();");
+  EXPECT_NO_MESSAGES ();
+#elif defined (HAVE_ARM64)
+  COMPILE_AND_LOAD_SCRIPT (
+      "const page = Memory.alloc(Process.pageSize);"
+      "let writer = new Arm64Writer(page);"
+      "writer.putBLabel('later');"
+      "writer.putBrkImm(42);"
+      "writer.putLabel('later');"
+      "writer.putRet();"
+      "Memory.protect(page, Process.pageSize, '---');"
+      "writer = null;"
+      "gc();");
+  EXPECT_NO_MESSAGES ();
+#elif defined (HAVE_MIPS)
+  COMPILE_AND_LOAD_SCRIPT (
+      "const page = Memory.alloc(Process.pageSize);"
+      "let writer = new MipsWriter(page);"
+      "writer.putJLabel('later');"
+      "writer.putBreak(42);"
+      "writer.putLabel('later');"
+      "writer.putRet();"
+      "Memory.protect(page, Process.pageSize, '---');"
+      "writer = null;"
+      "gc();");
+  EXPECT_NO_MESSAGES ();
+#else
+  g_print ("<skipping, missing code for current architecture> ");
+#endif
+}
+
+TESTCASE (code_writer_should_flush_on_reset)
+{
+  const gchar * test_reset =
+      "const size = writer.offset;"
+      "const before = new Uint8Array(page.readByteArray(size));"
+      "writer.reset(page);"
+      "const after = new Uint8Array(page.readByteArray(size));"
+      "send(after.join(',') !== before.join(','));";
+
+#if defined (HAVE_I386)
+  COMPILE_AND_LOAD_SCRIPT (
+      "const page = Memory.alloc(Process.pageSize);"
+      "const writer = new X86Writer(page);"
+      "writer.putJmpShortLabel('later');"
+      "writer.putBreakpoint();"
+      "writer.putLabel('later');"
+      "writer.putRet();"
+      "%s",
+      test_reset);
+  EXPECT_SEND_MESSAGE_WITH ("true");
+  EXPECT_NO_MESSAGES ();
+#elif defined (HAVE_ARM)
+  COMPILE_AND_LOAD_SCRIPT (
+      "const page = Memory.alloc(Process.pageSize);"
+      "const writer = new ArmWriter(page);"
+      "writer.putBLabel('later');"
+      "writer.putBrkImm(13);"
+      "writer.putBrkImm(37);"
+      "writer.putLabel('later');"
+      "writer.putMovRegReg('pc', 'lr');"
+      "%s",
+      test_reset);
+  EXPECT_SEND_MESSAGE_WITH ("true");
+  EXPECT_NO_MESSAGES ();
+
+  COMPILE_AND_LOAD_SCRIPT (
+      "const page = Memory.alloc(Process.pageSize);"
+      "const writer = new ThumbWriter(page);"
+      "writer.putBLabel('later');"
+      "writer.putBkptImm(13);"
+      "writer.putBkptImm(37);"
+      "writer.putLabel('later');"
+      "writer.putPopRegs(['pc']);"
+      "%s",
+      test_reset);
+  EXPECT_SEND_MESSAGE_WITH ("true");
+  EXPECT_NO_MESSAGES ();
+#elif defined (HAVE_ARM64)
+  COMPILE_AND_LOAD_SCRIPT (
+      "const page = Memory.alloc(Process.pageSize);"
+      "const writer = new Arm64Writer(page);"
+      "writer.putBLabel('later');"
+      "writer.putBrkImm(42);"
+      "writer.putLabel('later');"
+      "writer.putRet();"
+      "%s",
+      test_reset);
+  EXPECT_SEND_MESSAGE_WITH ("true");
+  EXPECT_NO_MESSAGES ();
+#elif defined (HAVE_MIPS)
+  COMPILE_AND_LOAD_SCRIPT (
+      "const page = Memory.alloc(Process.pageSize);"
+      "const writer = new MipsWriter(page);"
+      "writer.putJLabel('later');"
+      "writer.putBreak(42);"
+      "writer.putLabel('later');"
+      "writer.putRet();"
+      "%s",
+      test_reset);
+  EXPECT_SEND_MESSAGE_WITH ("true");
+  EXPECT_NO_MESSAGES ();
+#else
+  g_print ("<skipping, missing code for current architecture> ");
+#endif
+}
+
+TESTCASE (code_writer_should_flush_on_dispose)
+{
+  const gchar * test_dispose =
+      "const size = writer.offset;"
+      "const before = new Uint8Array(page.readByteArray(size));"
+      "writer.dispose();"
+      "const after = new Uint8Array(page.readByteArray(size));"
+      "send(after.join(',') !== before.join(','));";
+
+#if defined (HAVE_I386)
+  COMPILE_AND_LOAD_SCRIPT (
+      "const page = Memory.alloc(Process.pageSize);"
+      "const writer = new X86Writer(page);"
+      "writer.putJmpShortLabel('later');"
+      "writer.putBreakpoint();"
+      "writer.putLabel('later');"
+      "writer.putRet();"
+      "%s",
+      test_dispose);
+  EXPECT_SEND_MESSAGE_WITH ("true");
+  EXPECT_NO_MESSAGES ();
+#elif defined (HAVE_ARM)
+  COMPILE_AND_LOAD_SCRIPT (
+      "const page = Memory.alloc(Process.pageSize);"
+      "const writer = new ArmWriter(page);"
+      "writer.putBLabel('later');"
+      "writer.putBrkImm(13);"
+      "writer.putBrkImm(37);"
+      "writer.putLabel('later');"
+      "writer.putMovRegReg('pc', 'lr');"
+      "%s",
+      test_dispose);
+  EXPECT_SEND_MESSAGE_WITH ("true");
+  EXPECT_NO_MESSAGES ();
+
+  COMPILE_AND_LOAD_SCRIPT (
+      "const page = Memory.alloc(Process.pageSize);"
+      "const writer = new ThumbWriter(page);"
+      "writer.putBLabel('later');"
+      "writer.putBkptImm(13);"
+      "writer.putBkptImm(37);"
+      "writer.putLabel('later');"
+      "writer.putPopRegs(['pc']);"
+      "%s",
+      test_dispose);
+  EXPECT_SEND_MESSAGE_WITH ("true");
+  EXPECT_NO_MESSAGES ();
+#elif defined (HAVE_ARM64)
+  COMPILE_AND_LOAD_SCRIPT (
+      "const page = Memory.alloc(Process.pageSize);"
+      "const writer = new Arm64Writer(page);"
+      "writer.putBLabel('later');"
+      "writer.putBrkImm(42);"
+      "writer.putLabel('later');"
+      "writer.putRet();"
+      "%s",
+      test_dispose);
+  EXPECT_SEND_MESSAGE_WITH ("true");
+  EXPECT_NO_MESSAGES ();
+#elif defined (HAVE_MIPS)
+  COMPILE_AND_LOAD_SCRIPT (
+      "const page = Memory.alloc(Process.pageSize);"
+      "const writer = new MipsWriter(page);"
+      "writer.putJLabel('later');"
+      "writer.putBreak(42);"
+      "writer.putLabel('later');"
+      "writer.putRet();"
+      "%s",
+      test_dispose);
+  EXPECT_SEND_MESSAGE_WITH ("true");
+  EXPECT_NO_MESSAGES ();
+#else
+  g_print ("<skipping, missing code for current architecture> ");
+#endif
+}
+
+TESTCASE (code_relocator_should_expose_input_instruction)
+{
+#if defined (HAVE_I386) && GLIB_SIZEOF_VOID_P == 8
+  COMPILE_AND_LOAD_SCRIPT (
+      "const code = Memory.alloc(4);"
+      "code.writeByteArray([0x55, 0x48, 0x8b, 0xec]);"
+
+      "const page = Memory.alloc(Process.pageSize);"
+      "const writer = new X86Writer(page);"
+      "const relocator = new X86Relocator(code, writer);"
+
+      "send(relocator.input);"
+      "send(relocator.peekNextWriteInsn());"
+
+      "send(relocator.readOne());"
+      "let insn = relocator.input;"
+      "send(insn.toString());"
+      "send(insn.address.equals(code));"
+      "send(insn.next.equals(code.add(1)));"
+      "relocator.writeOne();"
+
+      "send(relocator.readOne());"
+      "insn = relocator.peekNextWriteInsn();"
+      "send(insn.toString());"
+      "send(insn.address.equals(code.add(1)));"
+      "send(insn.next.equals(code.add(4)));");
+
+  EXPECT_SEND_MESSAGE_WITH ("null");
+  EXPECT_SEND_MESSAGE_WITH ("null");
+
+  EXPECT_SEND_MESSAGE_WITH ("1");
+  EXPECT_SEND_MESSAGE_WITH ("\"push rbp\"");
+  EXPECT_SEND_MESSAGE_WITH ("true");
+  EXPECT_SEND_MESSAGE_WITH ("true");
+
+  EXPECT_SEND_MESSAGE_WITH ("4");
+  EXPECT_SEND_MESSAGE_WITH ("\"mov rbp, rsp\"");
+  EXPECT_SEND_MESSAGE_WITH ("true");
+  EXPECT_SEND_MESSAGE_WITH ("true");
+#elif defined (HAVE_ARM64)
+  COMPILE_AND_LOAD_SCRIPT (
+      "const code = Memory.alloc(8);"
+      "code.writeU32(0xb9400ae8);"
+      "code.add(4).writeU32(0x3100051f);"
+
+      "const page = Memory.alloc(Process.pageSize);"
+      "const writer = new Arm64Writer(page);"
+      "const relocator = new Arm64Relocator(code, writer);"
+
+      "send(relocator.input);"
+      "send(relocator.peekNextWriteInsn());"
+
+      "send(relocator.readOne());"
+      "let insn = relocator.input;"
+      "send(insn.toString());"
+      "send(insn.address.equals(code));"
+      "send(insn.next.equals(code.add(4)));"
+      "relocator.writeOne();"
+
+      "send(relocator.readOne());"
+      "insn = relocator.peekNextWriteInsn();"
+      "send(insn.toString());"
+      "send(insn.address.equals(code.add(4)));"
+      "send(insn.next.equals(code.add(8)));");
+
+  EXPECT_SEND_MESSAGE_WITH ("null");
+  EXPECT_SEND_MESSAGE_WITH ("null");
+
+  EXPECT_SEND_MESSAGE_WITH ("4");
+  EXPECT_SEND_MESSAGE_WITH ("\"ldr w8, [x23, #8]\"");
+  EXPECT_SEND_MESSAGE_WITH ("true");
+  EXPECT_SEND_MESSAGE_WITH ("true");
+
+  EXPECT_SEND_MESSAGE_WITH ("8");
+  EXPECT_SEND_MESSAGE_WITH ("\"cmn w8, #1\"");
+  EXPECT_SEND_MESSAGE_WITH ("true");
+  EXPECT_SEND_MESSAGE_WITH ("true");
+#else
+  g_print ("<skipping, missing code for current architecture> ");
 #endif
 }
 
@@ -2656,24 +3014,346 @@ gum_add_pointers_and_float_variadic (gpointer a,
   return total;
 }
 
-TESTCASE (file_can_be_written_to)
+TESTCASE (whole_file_can_be_read_as_bytes)
 {
-  gchar d00d[4] = { 0x64, 0x30, 0x30, 0x64 };
+  const gchar * path = MAKE_TEMPFILE_CONTAINING ("abc");
+  COMPILE_AND_LOAD_SCRIPT (
+      "send(Array.from(new Uint8Array(File.readAllBytes('%s'))));",
+      ESCAPE_PATH (path));
+  EXPECT_SEND_MESSAGE_WITH ("[97,98,99]");
+  EXPECT_NO_MESSAGES ();
+}
 
-  if (!g_test_slow ())
-  {
-    g_print ("<skipping, run in slow mode> ");
-    return;
-  }
+TESTCASE (whole_file_can_be_read_as_text)
+{
+  const gchar * path = MAKE_TEMPFILE_CONTAINING ("abc");
+  COMPILE_AND_LOAD_SCRIPT ("send(File.readAllText('%s'));", ESCAPE_PATH (path));
+  EXPECT_SEND_MESSAGE_WITH ("\"abc\"");
+  EXPECT_NO_MESSAGES ();
+}
+
+TESTCASE (whole_file_can_be_read_as_text_with_validation)
+{
+  const gchar * path = MAKE_TEMPFILE_CONTAINING ("ab\xc3\x28" "c");
+  COMPILE_AND_LOAD_SCRIPT ("send(File.readAllText('%s'));", ESCAPE_PATH (path));
+  EXPECT_ERROR_MESSAGE_WITH (ANY_LINE_NUMBER,
+      "Error: can't decode byte 0xc3 in position 2");
+  EXPECT_NO_MESSAGES ();
+}
+
+TESTCASE (whole_file_can_be_written_from_bytes)
+{
+  const gchar * path;
+  gchar * contents;
+
+  path = MAKE_TEMPFILE_CONTAINING ("abc");
 
   COMPILE_AND_LOAD_SCRIPT (
-      "const log = new File(\"/tmp/script-test.log\", 'a');"
+      "File.writeAllBytes('%s', new Uint8Array([100,101,102]));",
+      ESCAPE_PATH (path));
+  EXPECT_NO_MESSAGES ();
+
+  g_file_get_contents (path, &contents, NULL, NULL);
+  g_assert_cmpstr (contents, ==, "def");
+  g_free (contents);
+}
+
+TESTCASE (whole_file_can_be_written_from_text)
+{
+  const gchar * path;
+  gchar * contents;
+
+  path = MAKE_TEMPFILE_CONTAINING ("abc");
+
+  COMPILE_AND_LOAD_SCRIPT ("File.writeAllText('%s', 'def');",
+      ESCAPE_PATH (path));
+  EXPECT_NO_MESSAGES ();
+
+  g_file_get_contents (path, &contents, NULL, NULL);
+  g_assert_cmpstr (contents, ==, "def");
+  g_free (contents);
+}
+
+TESTCASE (file_can_be_read_as_bytes_in_one_go)
+{
+  const gchar * path = MAKE_TEMPFILE_CONTAINING ("abc");
+  COMPILE_AND_LOAD_SCRIPT (
+      "const file = new File('%s', 'rb');"
+      "const buf = file.readBytes();"
+      "send(buf instanceof ArrayBuffer);"
+      "send(Array.from(new Uint8Array(buf)));",
+      ESCAPE_PATH (path));
+  EXPECT_SEND_MESSAGE_WITH ("true");
+  EXPECT_SEND_MESSAGE_WITH ("[97,98,99]");
+  EXPECT_NO_MESSAGES ();
+}
+
+TESTCASE (file_can_be_read_as_bytes_in_chunks)
+{
+  const gchar * path = MAKE_TEMPFILE_CONTAINING ("abc");
+  COMPILE_AND_LOAD_SCRIPT (
+      "const file = new File('%s', 'rb');"
+      "send(Array.from(new Uint8Array(file.readBytes(2))));"
+      "send(Array.from(new Uint8Array(file.readBytes())));"
+      "send(Array.from(new Uint8Array(file.readBytes(1))));",
+      ESCAPE_PATH (path));
+  EXPECT_SEND_MESSAGE_WITH ("[97,98]");
+  EXPECT_SEND_MESSAGE_WITH ("[99]");
+  EXPECT_SEND_MESSAGE_WITH ("[]");
+  EXPECT_NO_MESSAGES ();
+}
+
+TESTCASE (file_can_be_read_as_text_in_one_go)
+{
+  const gchar * path = MAKE_TEMPFILE_CONTAINING ("abc");
+  COMPILE_AND_LOAD_SCRIPT (
+      "const file = new File('%s', 'rb');"
+      "send(file.readText());",
+      ESCAPE_PATH (path));
+  EXPECT_SEND_MESSAGE_WITH ("\"abc\"");
+  EXPECT_NO_MESSAGES ();
+}
+
+TESTCASE (file_can_be_read_as_text_in_chunks)
+{
+  const gchar * path = MAKE_TEMPFILE_CONTAINING ("abc");
+  COMPILE_AND_LOAD_SCRIPT (
+      "const file = new File('%s', 'rb');"
+      "send(file.readText(2));"
+      "send(file.readText());"
+      "send(file.readText(1));",
+      ESCAPE_PATH (path));
+  EXPECT_SEND_MESSAGE_WITH ("\"ab\"");
+  EXPECT_SEND_MESSAGE_WITH ("\"c\"");
+  EXPECT_SEND_MESSAGE_WITH ("\"\"");
+  EXPECT_NO_MESSAGES ();
+}
+
+TESTCASE (file_can_be_read_as_text_with_validation)
+{
+  const gchar * path = MAKE_TEMPFILE_CONTAINING ("\xc3\x28yay");
+  COMPILE_AND_LOAD_SCRIPT (
+      "const file = new File('%s', 'rb');"
+      "try {"
+      "  send(file.readText(2));"
+      "} catch (e) {"
+      "  send(e.message);"
+      "}"
+      "send(file.tell());"
+      "file.seek(2, File.SEEK_CUR);"
+      "send(file.readText());",
+      ESCAPE_PATH (path));
+  EXPECT_SEND_MESSAGE_WITH ("\"can't decode byte 0xc3 in position 0\"");
+  EXPECT_SEND_MESSAGE_WITH ("0");
+  EXPECT_SEND_MESSAGE_WITH ("\"yay\"");
+  EXPECT_NO_MESSAGES ();
+}
+
+TESTCASE (file_can_be_read_line_by_line)
+{
+  const gchar * path = MAKE_TEMPFILE_CONTAINING ("first\nsecond");
+  COMPILE_AND_LOAD_SCRIPT (
+      "const file = new File('%s', 'rb');\n"
+      "send(file.readLine());\n"
+      "send(file.readLine());\n"
+      "send(file.readLine());\n",
+      ESCAPE_PATH (path));
+  EXPECT_SEND_MESSAGE_WITH ("\"first\\n\"");
+  EXPECT_SEND_MESSAGE_WITH ("\"second\"");
+  EXPECT_SEND_MESSAGE_WITH ("\"\"");
+  EXPECT_NO_MESSAGES ();
+}
+
+TESTCASE (file_can_be_read_line_by_line_with_validation)
+{
+  const gchar * path = MAKE_TEMPFILE_CONTAINING ("first\noops\xc3\x28\nlast");
+  COMPILE_AND_LOAD_SCRIPT (
+      "const file = new File('%s', 'rb');\n"
+      "send(file.readLine());\n"
+      "try {"
+      "  send(file.readLine());"
+      "} catch (e) {"
+      "  send(e.message);"
+      "}"
+      "file.seek(7, File.SEEK_CUR);"
+      "send(file.readLine());\n",
+      ESCAPE_PATH (path));
+  EXPECT_SEND_MESSAGE_WITH ("\"first\\n\"");
+  EXPECT_SEND_MESSAGE_WITH ("\"can't decode byte 0xc3 in position 4\"");
+  EXPECT_SEND_MESSAGE_WITH ("\"last\"");
+  EXPECT_NO_MESSAGES ();
+}
+
+TESTCASE (file_position_can_be_queried)
+{
+  const gchar * path = MAKE_TEMPFILE_CONTAINING ("abc");
+  COMPILE_AND_LOAD_SCRIPT (
+      "const file = new File('%s', 'rb');"
+      "send(file.tell());"
+      "file.readBytes(2);"
+      "send(file.tell());",
+      ESCAPE_PATH (path));
+  EXPECT_SEND_MESSAGE_WITH ("0");
+  EXPECT_SEND_MESSAGE_WITH ("2");
+  EXPECT_NO_MESSAGES ();
+}
+
+TESTCASE (file_position_can_be_updated_to_absolute_position_implicitly)
+{
+  const gchar * path = MAKE_TEMPFILE_CONTAINING ("abc");
+  COMPILE_AND_LOAD_SCRIPT (
+      "const file = new File('%s', 'rb');"
+      "file.seek(2);"
+      "send(file.tell());"
+      "send(Array.from(new Uint8Array(file.readBytes())));"
+      "send(file.tell());",
+      ESCAPE_PATH (path));
+  EXPECT_SEND_MESSAGE_WITH ("2");
+  EXPECT_SEND_MESSAGE_WITH ("[99]");
+  EXPECT_SEND_MESSAGE_WITH ("3");
+  EXPECT_NO_MESSAGES ();
+}
+
+TESTCASE (file_position_can_be_updated_to_absolute_position_explicitly)
+{
+  const gchar * path = MAKE_TEMPFILE_CONTAINING ("abc");
+  COMPILE_AND_LOAD_SCRIPT (
+      "const file = new File('%s', 'rb');"
+      "file.seek(2, File.SEEK_SET);"
+      "send(file.tell());"
+      "send(Array.from(new Uint8Array(file.readBytes())));"
+      "send(file.tell());",
+      ESCAPE_PATH (path));
+  EXPECT_SEND_MESSAGE_WITH ("2");
+  EXPECT_SEND_MESSAGE_WITH ("[99]");
+  EXPECT_SEND_MESSAGE_WITH ("3");
+  EXPECT_NO_MESSAGES ();
+}
+
+TESTCASE (file_position_can_be_updated_to_relative_position_from_current)
+{
+  const gchar * path = MAKE_TEMPFILE_CONTAINING ("abc");
+  COMPILE_AND_LOAD_SCRIPT (
+      "const file = new File('%s', 'rb');"
+      "send(Array.from(new Uint8Array(file.readBytes(2))));"
+      "file.seek(-1, File.SEEK_CUR);"
+      "send(Array.from(new Uint8Array(file.readBytes())));",
+      ESCAPE_PATH (path));
+  EXPECT_SEND_MESSAGE_WITH ("[97,98]");
+  EXPECT_SEND_MESSAGE_WITH ("[98,99]");
+  EXPECT_NO_MESSAGES ();
+}
+
+TESTCASE (file_position_can_be_updated_to_relative_position_from_end)
+{
+  const gchar * path = MAKE_TEMPFILE_CONTAINING ("abc");
+  COMPILE_AND_LOAD_SCRIPT (
+      "const file = new File('%s', 'rb');"
+      "file.seek(-2, File.SEEK_END);"
+      "send(Array.from(new Uint8Array(file.readBytes())));",
+      ESCAPE_PATH (path));
+  EXPECT_SEND_MESSAGE_WITH ("[98,99]");
+  EXPECT_NO_MESSAGES ();
+}
+
+TESTCASE (file_can_be_written_to)
+{
+  const gchar * path;
+  const gchar d00d[4] = { 0x64, 0x30, 0x30, 0x64 };
+  gchar * contents;
+
+  path = MAKE_TEMPFILE_CONTAINING ("abc");
+
+  COMPILE_AND_LOAD_SCRIPT (
+      "const log = new File('%s', 'wb');"
       "log.write(\"Hello \");"
       "log.write(" GUM_PTR_CONST ".readByteArray(4));"
       "log.write(\"!\\n\");"
       "log.close();",
-      d00d);
+      ESCAPE_PATH (path), d00d);
   EXPECT_NO_MESSAGES ();
+
+  g_file_get_contents (path, &contents, NULL, NULL);
+  g_assert_cmpstr (contents, ==, "Hello d00d!\n");
+  g_free (contents);
+}
+
+TESTCASE (md5_can_be_computed_for_stream)
+{
+  COMPILE_AND_LOAD_SCRIPT (
+      "const checksum = new Checksum('md5');"
+      "checksum.update('ab').update('c');"
+
+      "send(checksum.getString());"
+
+      "const view = new DataView(checksum.getDigest());"
+      "send(["
+      "  view.getUint32(0).toString(16),"
+      "  view.getUint32(4).toString(16),"
+      "  view.getUint32(8).toString(16),"
+      "  view.getUint32(12).toString(16)"
+      "]);"
+
+      "checksum.update('d');");
+
+  EXPECT_SEND_MESSAGE_WITH ("\"900150983cd24fb0d6963f7d28e17f72\"");
+  EXPECT_SEND_MESSAGE_WITH ("[\"90015098\",\"3cd24fb0\",\"d6963f7d\","
+      "\"28e17f72\"]");
+  EXPECT_ERROR_MESSAGE_WITH (ANY_LINE_NUMBER, "Error: checksum is closed");
+  EXPECT_NO_MESSAGES ();
+}
+
+TESTCASE (md5_can_be_computed_for_string)
+{
+  COMPILE_AND_LOAD_SCRIPT ("send(Checksum.compute('md5', 'abc'));");
+  EXPECT_SEND_MESSAGE_WITH ("\"900150983cd24fb0d6963f7d28e17f72\"");
+}
+
+TESTCASE (md5_can_be_computed_for_bytes)
+{
+  COMPILE_AND_LOAD_SCRIPT (
+      "const data = new Uint8Array([ 1, 2, 3 ]);"
+      "send(Checksum.compute('md5', data.buffer));");
+  EXPECT_SEND_MESSAGE_WITH ("\"5289df737df57326fcdd22597afb1fac\"");
+}
+
+TESTCASE (sha1_can_be_computed_for_string)
+{
+  COMPILE_AND_LOAD_SCRIPT ("send(Checksum.compute('sha1', 'abc'));");
+  EXPECT_SEND_MESSAGE_WITH ("\"a9993e364706816aba3e25717850c26c9cd0d89d\"");
+}
+
+TESTCASE (sha256_can_be_computed_for_string)
+{
+  COMPILE_AND_LOAD_SCRIPT ("send(Checksum.compute('sha256', 'abc'));");
+  EXPECT_SEND_MESSAGE_WITH ("\""
+      "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+      "\"");
+}
+
+TESTCASE (sha384_can_be_computed_for_string)
+{
+  COMPILE_AND_LOAD_SCRIPT ("send(Checksum.compute('sha384', 'abc'));");
+  EXPECT_SEND_MESSAGE_WITH ("\""
+      "cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed"
+      "8086072ba1e7cc2358baeca134c825a7"
+      "\"");
+}
+
+TESTCASE (sha512_can_be_computed_for_string)
+{
+  COMPILE_AND_LOAD_SCRIPT ("send(Checksum.compute('sha512', 'abc'));");
+  EXPECT_SEND_MESSAGE_WITH ("\""
+      "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a"
+      "2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f"
+      "\"");
+}
+
+TESTCASE (requesting_unknown_checksum_for_string_should_throw)
+{
+  COMPILE_AND_LOAD_SCRIPT ("send(Checksum.compute('bogus', 'abc'));");
+  EXPECT_ERROR_MESSAGE_WITH (ANY_LINE_NUMBER,
+      "Error: unsupported checksum type");
 }
 
 #ifdef HAVE_SQLITE
@@ -4739,10 +5419,10 @@ TESTCASE (invalid_script_should_return_null)
   GError * err = NULL;
 
   g_assert_null (gum_script_backend_create_sync (fixture->backend, "testcase",
-      "'", NULL, NULL));
+      "'", NULL, NULL, NULL));
 
   g_assert_null (gum_script_backend_create_sync (fixture->backend, "testcase",
-      "'", NULL, &err));
+      "'", NULL, NULL, &err));
   g_assert_nonnull (err);
   g_assert_true (g_str_has_prefix (err->message,
       "Script(line 1): SyntaxError: "));
@@ -5553,7 +6233,7 @@ TESTCASE (return_address_can_be_read)
   EXPECT_NO_MESSAGES ();
 }
 
-TESTCASE (register_can_be_read)
+TESTCASE (general_purpose_register_can_be_read)
 {
   COMPILE_AND_LOAD_SCRIPT (
       "Interceptor.attach(" GUM_PTR_CONST ", {"
@@ -5567,7 +6247,7 @@ TESTCASE (register_can_be_read)
   EXPECT_SEND_MESSAGE_WITH ("1890");
 }
 
-TESTCASE (register_can_be_written)
+TESTCASE (general_purpose_register_can_be_written)
 {
   COMPILE_AND_LOAD_SCRIPT (
       "Interceptor.attach(" GUM_PTR_CONST ", {"
@@ -5579,6 +6259,90 @@ TESTCASE (register_can_be_written)
   EXPECT_NO_MESSAGES ();
   g_assert_cmpint (target_function_int (42), ==, 1337);
   EXPECT_NO_MESSAGES ();
+}
+
+TESTCASE (vector_register_can_be_read)
+{
+#if (defined (HAVE_ARM) && defined (__ARM_PCS_VFP)) || defined (HAVE_ARM64)
+  COMPILE_AND_LOAD_SCRIPT (
+      "Interceptor.attach(" GUM_PTR_CONST ", {"
+      "  onEnter() {"
+      "    const v = new Float64Array(this.context.q0);"
+      "    send(v[0]);"
+      "  }"
+      "});", target_function_double);
+
+  EXPECT_NO_MESSAGES ();
+  target_function_double (42.0);
+  EXPECT_SEND_MESSAGE_WITH ("42");
+#else
+  g_print ("<skipping, missing code for current architecture or ABI> ");
+#endif
+}
+
+TESTCASE (double_register_can_be_read)
+{
+#if (defined (HAVE_ARM) && defined (__ARM_PCS_VFP)) || defined (HAVE_ARM64)
+  COMPILE_AND_LOAD_SCRIPT (
+      "Interceptor.attach(" GUM_PTR_CONST ", {"
+      "  onEnter() {"
+      "    send(this.context.d0);"
+      "  }"
+      "});", target_function_double);
+
+  EXPECT_NO_MESSAGES ();
+  target_function_double (42.0);
+  EXPECT_SEND_MESSAGE_WITH ("42");
+#else
+  g_print ("<skipping, missing code for current architecture or ABI> ");
+#endif
+}
+
+TESTCASE (float_register_can_be_read)
+{
+#if (defined (HAVE_ARM) && defined (__ARM_PCS_VFP)) || defined (HAVE_ARM64)
+  COMPILE_AND_LOAD_SCRIPT (
+      "Interceptor.attach(" GUM_PTR_CONST ", {"
+      "  onEnter() {"
+      "    send(this.context.s0);"
+      "  }"
+      "});", target_function_float);
+
+  EXPECT_NO_MESSAGES ();
+  target_function_float (42.0f);
+  EXPECT_SEND_MESSAGE_WITH ("42");
+#else
+  g_print ("<skipping, missing code for current architecture or ABI> ");
+#endif
+}
+
+TESTCASE (status_register_can_be_read)
+{
+#if defined (HAVE_ARM)
+  COMPILE_AND_LOAD_SCRIPT (
+      "Interceptor.attach(" GUM_PTR_CONST ", {"
+      "  onEnter() {"
+      "    send(typeof this.context.cpsr);"
+      "  }"
+      "});", target_function_int);
+
+  EXPECT_NO_MESSAGES ();
+  target_function_int (42);
+  EXPECT_SEND_MESSAGE_WITH ("\"number\"");
+#elif defined (HAVE_ARM64)
+  COMPILE_AND_LOAD_SCRIPT (
+      "Interceptor.attach(" GUM_PTR_CONST ", {"
+      "  onEnter() {"
+      "    send(typeof this.context.nzcv);"
+      "  }"
+      "});", target_function_int);
+
+  EXPECT_NO_MESSAGES ();
+  target_function_int (42);
+  EXPECT_SEND_MESSAGE_WITH ("\"number\"");
+#else
+  g_print ("<skipping, missing code for current architecture> ");
+#endif
 }
 
 TESTCASE (system_error_can_be_read_from_interceptor_listener)
@@ -8657,7 +9421,7 @@ TESTCASE (script_can_be_compiled_to_bytecode)
   }
 
   script = gum_script_backend_create_from_bytes_sync (fixture->backend, code,
-      NULL, &error);
+      NULL, NULL, &error);
   if (GUM_QUICK_IS_SCRIPT_BACKEND (fixture->backend))
   {
     TestScriptMessageItem * item;
@@ -8703,7 +9467,7 @@ TESTCASE (script_should_not_leak_if_destroyed_before_load)
   ref_count_before = G_OBJECT (held_instance)->ref_count;
 
   script = gum_script_backend_create_sync (fixture->backend, "testcase",
-      "console.log('Hello World');", NULL, NULL);
+      "console.log('Hello World');", NULL, NULL, NULL);
   g_object_unref (script);
 
   g_assert_cmpuint (G_OBJECT (held_instance)->ref_count, ==, ref_count_before);
@@ -8724,7 +9488,7 @@ TESTCASE (script_memory_usage)
 
   /* Warm up */
   script = gum_script_backend_create_sync (fixture->backend, "testcase",
-      "const foo = 42;", NULL, NULL);
+      "const foo = 42;", NULL, NULL, NULL);
   gum_script_load_sync (script, NULL);
   gum_script_unload_sync (script, NULL);
   g_object_unref (script);
@@ -8735,7 +9499,7 @@ TESTCASE (script_memory_usage)
 
   g_timer_reset (timer);
   script = gum_script_backend_create_sync (fixture->backend, "testcase",
-      "const foo = 42;", NULL, NULL);
+      "const foo = 42;", NULL, NULL, NULL);
   g_print ("created in %u ms\n",
       (guint) (g_timer_elapsed (timer, NULL) * 1000.0));
 
@@ -8753,6 +9517,62 @@ TESTCASE (script_memory_usage)
       (guint) (g_timer_elapsed (timer, NULL) * 1000.0));
 
   g_object_unref (script);
+}
+
+TESTCASE (esm_in_root_should_be_supported)
+{
+  COMPILE_AND_LOAD_SCRIPT (
+      "📦\n"
+      "57 /main.js\n"
+      "27 /dependency.js\n"
+      "✄\n"
+      "import { value } from './dependency.js';\n"
+      "send({ value });\n"
+      "✄\n"
+      "export const value = 1337;\n");
+  EXPECT_SEND_MESSAGE_WITH ("{\"value\":1337}");
+}
+
+TESTCASE (esm_in_subdir_should_be_supported)
+{
+  COMPILE_AND_LOAD_SCRIPT (
+      "📦\n"
+      "57 /lib/main.js\n"
+      "27 /lib/dependency.js\n"
+      "✄\n"
+      "import { value } from './dependency.js';\n"
+      "send({ value });\n"
+      "✄\n"
+      "export const value = 1337;\n");
+  EXPECT_SEND_MESSAGE_WITH ("{\"value\":1337}");
+}
+
+TESTCASE (esm_referencing_subdir_should_be_supported)
+{
+  COMPILE_AND_LOAD_SCRIPT (
+      "📦\n"
+      "61 /main.js\n"
+      "27 /lib/dependency.js\n"
+      "✄\n"
+      "import { value } from './lib/dependency.js';\n"
+      "send({ value });\n"
+      "✄\n"
+      "export const value = 1337;\n");
+  EXPECT_SEND_MESSAGE_WITH ("{\"value\":1337}");
+}
+
+TESTCASE (esm_referencing_parent_should_be_supported)
+{
+  COMPILE_AND_LOAD_SCRIPT (
+      "📦\n"
+      "58 /lib/main.js\n"
+      "27 /dependency.js\n"
+      "✄\n"
+      "import { value } from '../dependency.js';\n"
+      "send({ value });\n"
+      "✄\n"
+      "export const value = 1337;\n");
+  EXPECT_SEND_MESSAGE_WITH ("{\"value\":1337}");
 }
 
 TESTCASE (source_maps_should_be_supported_for_our_runtime)
@@ -9086,8 +9906,8 @@ TESTCASE (exceptions_can_be_handled)
 
 TESTCASE (debugger_can_be_enabled)
 {
-  GumScript * badger, * snake;
   GumInspectorServer * server;
+  GumScript * script;
   GError * error;
 
   if (GUM_QUICK_IS_SCRIPT_BACKEND (fixture->backend))
@@ -9102,25 +9922,18 @@ TESTCASE (debugger_can_be_enabled)
     return;
   }
 
-  badger = gum_script_backend_create_sync (fixture->backend, "badger",
-      "const badgerTimer = setInterval(() => {\n"
-      "  send('badger');\n"
-      "}, 1000);", NULL, NULL);
-  gum_script_set_message_handler (badger, on_script_message, "badger", NULL);
-  gum_script_load_sync (badger, NULL);
-
-  snake = gum_script_backend_create_sync (fixture->backend, "snake",
-      "const snakeTimer = setInterval(() => {\n"
-      "  send('snake');\n"
-      "}, 1000);", NULL, NULL);
-  gum_script_set_message_handler (snake, on_script_message, "snake", NULL);
-  gum_script_load_sync (snake, NULL);
-
   server = gum_inspector_server_new ();
   g_signal_connect (server, "message", G_CALLBACK (on_incoming_debug_message),
       fixture->backend);
-  gum_script_backend_set_debug_message_handler (fixture->backend,
-      on_outgoing_debug_message, server, NULL);
+
+  script = gum_script_backend_create_sync (fixture->backend, "script",
+      "const scriptTimer = setInterval(() => {\n"
+      "  send('hello');\n"
+      "}, 1000);", NULL, NULL, NULL);
+  gum_script_set_message_handler (script, on_script_message, "script", NULL);
+  gum_script_set_debug_message_handler (script, on_outgoing_debug_message,
+      server, NULL);
+  gum_script_load_sync (script, NULL);
 
   error = NULL;
   if (gum_inspector_server_start (server, &error))
@@ -9142,10 +9955,8 @@ TESTCASE (debugger_can_be_enabled)
     g_error_free (error);
   }
 
+  g_object_unref (script);
   g_object_unref (server);
-
-  g_object_unref (snake);
-  g_object_unref (badger);
 }
 
 TESTCASE (objc_api_is_embedded)
@@ -9179,8 +9990,7 @@ check_exception_handling_testable (void)
 }
 
 static void
-on_script_message (GumScript * script,
-                   const gchar * message,
+on_script_message (const gchar * message,
                    GBytes * data,
                    gpointer user_data)
 {
@@ -9193,9 +10003,9 @@ on_incoming_debug_message (GumInspectorServer * server,
                            const gchar * message,
                            gpointer user_data)
 {
-  GumScriptBackend * backend = user_data;
+  GumScript * script = user_data;
 
-  gum_script_backend_post_debug_message (backend, message);
+  gum_script_post_debug_message (script, message);
 }
 
 static void
@@ -9225,6 +10035,38 @@ target_function_int (int arg)
    * JS-defined replacement function (NativeCallback) will be prone to clobber
    * registers used by the custom calling convention.
    */
+  fflush (stdout);
+
+  return result;
+}
+
+GUM_NOINLINE static float
+target_function_float (float arg)
+{
+  float result = 0;
+  int i;
+
+  for (i = 0; i != 10; i++)
+    result += i * arg;
+
+  gum_script_dummy_global_to_trick_optimizer += result;
+
+  fflush (stdout);
+
+  return result;
+}
+
+GUM_NOINLINE static double
+target_function_double (double arg)
+{
+  double result = 0;
+  int i;
+
+  for (i = 0; i != 10; i++)
+    result += i * arg;
+
+  gum_script_dummy_global_to_trick_optimizer += result;
+
   fflush (stdout);
 
   return result;

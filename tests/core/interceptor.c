@@ -8,10 +8,8 @@
 #include "interceptor-fixture.c"
 
 TESTLIST_BEGIN (interceptor)
-#ifdef HAVE_I386
   TESTENTRY (cpu_register_clobber)
   TESTENTRY (cpu_flag_clobber)
-#endif
 
   TESTENTRY (i_can_has_attachability)
 #ifdef HAVE_I386
@@ -47,9 +45,7 @@ TESTLIST_BEGIN (interceptor)
 #endif
   TESTENTRY (function_arguments)
   TESTENTRY (function_return_value)
-#ifdef HAVE_I386
   TESTENTRY (function_cpu_context_on_enter)
-#endif
   TESTENTRY (ignore_current_thread)
   TESTENTRY (ignore_current_thread_nested)
   TESTENTRY (ignore_other_threads)
@@ -66,6 +62,7 @@ TESTLIST_BEGIN (interceptor)
 # endif
 #endif
   TESTENTRY (replace_then_attach)
+  TESTENTRY (replace_keep_original)
 TESTLIST_END ()
 
 #ifdef HAVE_WINDOWS
@@ -265,22 +262,32 @@ TESTCASE (function_return_value)
       ==, GPOINTER_TO_SIZE (return_value));
 }
 
-#ifdef HAVE_I386
-
 TESTCASE (function_cpu_context_on_enter)
 {
-  GumCpuContext input, output;
+#if defined (HAVE_I386) || defined (HAVE_ARM) || defined (HAVE_ARM64)
+  ClobberTestFunc * cursor;
 
-  interceptor_fixture_attach (fixture, 0, clobber_test_function, 'a', 'b');
+  for (cursor = clobber_test_functions; *cursor != NULL; cursor++)
+  {
+    ClobberTestFunc target_func = *cursor;
+    GumCpuContext input, output;
 
-  fill_cpu_context_with_magic_values (&input);
-  invoke_clobber_test_function_with_cpu_context (&input, &output);
-  g_assert_cmpstr (fixture->result->str, ==, "ab");
-  assert_cpu_contexts_are_equal (&input,
-      &fixture->listener_context[0]->last_on_enter_cpu_context);
-}
+    interceptor_fixture_attach (fixture, 0, target_func, 'a', 'b');
 
+    fill_cpu_context_with_magic_values (&input);
+    invoke_clobber_test_function_with_cpu_context (target_func,
+        &input, &output);
+    g_assert_cmpstr (fixture->result->str, ==, "ab");
+    assert_cpu_contexts_are_equal (&input,
+        &fixture->listener_context[0]->last_on_enter_cpu_context);
+
+    g_string_truncate (fixture->result, 0);
+    interceptor_fixture_detach (fixture, 0);
+  }
+#else
+  g_print ("<skipping, missing code for current architecture> ");
 #endif
+}
 
 TESTCASE (ignore_current_thread)
 {
@@ -435,32 +442,56 @@ TESTCASE (function_data)
   g_object_unref (fd_listener);
 }
 
-#ifdef HAVE_I386
-
 TESTCASE (cpu_register_clobber)
 {
-  GumCpuContext input, output;
+#if defined (HAVE_I386) || defined (HAVE_ARM) || defined (HAVE_ARM64)
+  ClobberTestFunc * cursor;
 
-  interceptor_fixture_attach (fixture, 0, clobber_test_function, '>', '<');
+  for (cursor = clobber_test_functions; *cursor != NULL; cursor++)
+  {
+    ClobberTestFunc target_func = *cursor;
+    GumCpuContext input, output;
 
-  fill_cpu_context_with_magic_values (&input);
-  invoke_clobber_test_function_with_cpu_context (&input, &output);
-  g_assert_cmpstr (fixture->result->str, ==, "><");
-  assert_cpu_contexts_are_equal (&input, &output);
+    interceptor_fixture_attach (fixture, 0, target_func, '>', '<');
+
+    fill_cpu_context_with_magic_values (&input);
+    invoke_clobber_test_function_with_cpu_context (target_func,
+        &input, &output);
+    g_assert_cmpstr (fixture->result->str, ==, "><");
+    assert_cpu_contexts_are_equal (&input, &output);
+
+    g_string_truncate (fixture->result, 0);
+    interceptor_fixture_detach (fixture, 0);
+  }
+#else
+  g_print ("<skipping, missing code for current architecture> ");
+#endif
 }
 
 TESTCASE (cpu_flag_clobber)
 {
-  gsize flags_input, flags_output;
+#if defined (HAVE_I386) || defined (HAVE_ARM) || defined (HAVE_ARM64)
+  ClobberTestFunc * cursor;
 
-  interceptor_fixture_attach (fixture, 0, clobber_test_function, '>', '<');
+  for (cursor = clobber_test_functions; *cursor != NULL; cursor++)
+  {
+    ClobberTestFunc target_func = *cursor;
+    gsize flags_input, flags_output;
 
-  invoke_clobber_test_function_with_carry_set (&flags_input, &flags_output);
-  g_assert_cmpstr (fixture->result->str, ==, "><");
-  g_assert_cmphex (flags_output, ==, flags_input);
-}
+    interceptor_fixture_attach (fixture, 0, target_func, '>', '<');
 
+    invoke_clobber_test_function_with_carry_set (target_func,
+        &flags_input, &flags_output);
+    g_assert_cmpstr (fixture->result->str, ==, "><");
+    g_assert_cmphex (flags_output, ==, flags_input);
+
+    g_string_truncate (fixture->result, 0);
+    interceptor_fixture_detach (fixture, 0);
+  }
+#else
+  g_print ("<skipping, missing code for current architecture> ");
 #endif
+}
 
 TESTCASE (i_can_has_attachability)
 {
@@ -583,7 +614,7 @@ TESTCASE (replace_one)
   malloc_impl = interceptor_fixture_get_libc_malloc ();
 
   g_assert_cmpint (gum_interceptor_replace (fixture->interceptor, malloc_impl,
-      replacement_malloc, &counter), ==, GUM_REPLACE_OK);
+      replacement_malloc, &counter, NULL), ==, GUM_REPLACE_OK);
   ret = malloc_impl (0x42);
 
   /*
@@ -624,9 +655,10 @@ TESTCASE (replace_two)
   free_impl = interceptor_fixture_get_libc_free ();
 
   gum_interceptor_replace (fixture->interceptor, malloc_impl,
-      replacement_malloc_calling_malloc_and_replaced_free, &malloc_counter);
+      replacement_malloc_calling_malloc_and_replaced_free, &malloc_counter,
+      NULL);
   gum_interceptor_replace (fixture->interceptor, free_impl,
-      replacement_free_doing_nothing, &free_counter);
+      replacement_free_doing_nothing, &free_counter, NULL);
 
   ret = malloc (0x42);
   g_assert_nonnull (ret);
@@ -686,12 +718,47 @@ TESTCASE (replace_then_attach)
   guint target_counter = 0;
 
   g_assert_cmpint (gum_interceptor_replace (fixture->interceptor,
-      target_function, replacement_target_function, &target_counter),
+      target_function, replacement_target_function, &target_counter, NULL),
       ==, GUM_REPLACE_OK);
   interceptor_fixture_attach (fixture, 0, target_function, '>', '<');
   target_function (fixture->result);
   g_assert_cmpstr (fixture->result->str, ==, ">/|\\<");
   gum_interceptor_revert (fixture->interceptor, target_function);
+}
+
+TESTCASE (replace_keep_original)
+{
+  gpointer (* malloc_impl) (gsize size);
+  gpointer (* original_impl) (gsize size) = NULL;
+  guint counter = 0;
+  volatile gpointer ret;
+
+  if (RUNNING_ON_VALGRIND)
+  {
+    g_print ("<skipping, not compatible with Valgrind> ");
+    return;
+  }
+
+  malloc_impl = interceptor_fixture_get_libc_malloc ();
+
+  g_assert_cmpint (gum_interceptor_replace (fixture->interceptor, malloc_impl,
+      replacement_malloc, &counter, (void **) &original_impl),
+      ==, GUM_REPLACE_OK);
+  g_assert_nonnull (original_impl);
+  ret = original_impl (0x42);
+
+  /*
+   * This statement is needed so the compiler doesn't move the malloc() call
+   * to after revert().  We do the real assert after reverting, as failing
+   * asserts with broken malloc() are quite tricky to debug. :)
+   */
+  g_assert_nonnull (ret);
+
+  gum_interceptor_revert (fixture->interceptor, malloc_impl);
+  g_assert_cmpint (counter, ==, 0);
+  g_assert_cmphex (GPOINTER_TO_SIZE (ret), !=, 0x42);
+
+  free (ret);
 }
 
 static gpointer
@@ -718,7 +785,7 @@ TESTCASE (i_can_has_replaceability)
     UnsupportedFunction * func = &unsupported_functions[i];
 
     g_assert_cmpint (gum_interceptor_replace (fixture->interceptor,
-        func->code + func->code_offset, replacement_malloc, NULL),
+        func->code + func->code_offset, replacement_malloc, NULL, NULL),
         ==, GUM_REPLACE_WRONG_SIGNATURE);
   }
 
@@ -728,9 +795,9 @@ TESTCASE (i_can_has_replaceability)
 TESTCASE (already_replaced)
 {
   g_assert_cmpint (gum_interceptor_replace (fixture->interceptor,
-        target_function, malloc, NULL), ==, GUM_REPLACE_OK);
+        target_function, malloc, NULL, NULL), ==, GUM_REPLACE_OK);
   g_assert_cmpint (gum_interceptor_replace (fixture->interceptor,
-        target_function, malloc, NULL), ==, GUM_REPLACE_ALREADY_REPLACED);
+        target_function, malloc, NULL, NULL), ==, GUM_REPLACE_ALREADY_REPLACED);
   gum_interceptor_revert (fixture->interceptor, target_function);
 }
 

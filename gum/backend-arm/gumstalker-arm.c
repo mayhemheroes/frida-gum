@@ -1071,6 +1071,7 @@ gum_stalker_infect (GumThreadId thread_id,
   gum_spinlock_release (&ctx->code_lock);
 
   gum_event_sink_start (ctx->sink);
+  ctx->sink_started = TRUE;
 }
 
 static void
@@ -3220,7 +3221,6 @@ gum_exec_ctx_write_arm_prolog (GumExecCtx * ctx,
                                GumArmWriter * cw)
 {
   const GumCpuFeatures cpu_features = ctx->stalker->cpu_features;
-  gint immediate_for_sp = 0;
 
   /*
    * For our context, we want to build up the following structure so that
@@ -3228,9 +3228,9 @@ gum_exec_ctx_write_arm_prolog (GumExecCtx * ctx,
    *
    * struct _GumArmCpuContext
    * {
-   *   guint32 cpsr;
    *   guint32 pc;
    *   guint32 sp;
+   *   guint32 cpsr;
    *
    *   guint32 r8;
    *   guint32 r9;
@@ -3238,54 +3238,54 @@ gum_exec_ctx_write_arm_prolog (GumExecCtx * ctx,
    *   guint32 r11;
    *   guint32 r12;
    *
+   *   GumArmVectorReg q[16];
+   *
+   *   guint32 _padding;
+   *
    *   guint32 r[8];
    *   guint32 lr;
    * };
    */
 
   /* Store R0 through R7 and LR */
-  gum_arm_writer_put_push_registers (cw, 9,
+  gum_arm_writer_put_push_regs (cw, 9,
       ARM_REG_R0, ARM_REG_R1, ARM_REG_R2,
       ARM_REG_R3, ARM_REG_R4, ARM_REG_R5,
       ARM_REG_R6, ARM_REG_R7, ARM_REG_LR);
-  immediate_for_sp += 9 * 4;
 
-  /* Store R8 through R12 */
-  gum_arm_writer_put_push_registers (cw, 5,
-      ARM_REG_R8, ARM_REG_R9, ARM_REG_R10,
-      ARM_REG_R11, ARM_REG_R12);
-  immediate_for_sp += 5 * 4;
+  /* Take note of CPSR and where GumCpuContext ends/application stack begins */
+  gum_arm_writer_put_mov_reg_cpsr (cw, ARM_REG_R5);
+  gum_arm_writer_put_add_reg_reg_imm (cw, ARM_REG_R4, ARM_REG_SP, 9 * 4);
 
-  /*
-   * Calculate the original value that SP would have held prior to this function
-   * by adding on the amount of registers pushed so far and store it in R2.
-   */
-  gum_arm_writer_put_add_reg_reg_imm (cw, ARM_REG_R2, ARM_REG_SP,
-      immediate_for_sp);
+  /* Add padding followed by VFP registers */
+  if ((cpu_features & GUM_CPU_VFP2) != 0)
+  {
+    if ((cpu_features & GUM_CPU_VFPD32) != 0)
+    {
+      gum_arm_writer_put_sub_reg_u16 (cw, ARM_REG_SP, 4);
+      gum_arm_writer_put_vpush_range (cw, ARM_REG_Q8, ARM_REG_Q15);
+    }
+    else
+    {
+      gum_arm_writer_put_sub_reg_u16 (cw, ARM_REG_SP,
+          (8 * sizeof (GumArmVectorReg)) + 4);
+    }
 
-  /*
-   * Zero the register R1. This will be used to store the value of PC. If a
-   * function inside Stalker wants to retrieve the value of PC according to the
-   * guest then it must interrogate the iterator being used to process the
-   * original instruction stream. Since the guest will be executing instrumented
-   * code, the value of PC if we pushed it here would not be the value of PC
-   * within the original block anyway.
-   *
-   * The data within this context block is read by the instrumented instructions
-   * emitted by load_real_register_into() and this takes this edge case into
-   * account.
-   */
-  gum_arm_writer_put_sub_reg_reg_reg (cw, ARM_REG_R1, ARM_REG_R1, ARM_REG_R1);
+    gum_arm_writer_put_vpush_range (cw, ARM_REG_Q0, ARM_REG_Q7);
+  }
+  else
+  {
+    gum_arm_writer_put_sub_reg_u16 (cw, ARM_REG_SP,
+        (16 * sizeof (GumArmVectorReg)) + 4);
+  }
 
-  /* Read the flags register CPSR into R0 */
-  gum_arm_writer_put_mov_reg_cpsr (cw, ARM_REG_R0);
+  /* Store SP, CPSR, followed by R8-R12 */
+  gum_arm_writer_put_push_regs (cw, 7,
+      ARM_REG_R4, ARM_REG_R5,
+      ARM_REG_R8, ARM_REG_R9, ARM_REG_R10, ARM_REG_R11, ARM_REG_R12);
 
-  /*
-   * Push the values of R0, R1 and R2 containing the CPSR, zeroed PC and
-   * adjusted stack pointer respectively.
-   */
-  gum_arm_writer_put_push_registers (cw, 3,
-      ARM_REG_R0, ARM_REG_R1, ARM_REG_R2);
+  /* Reserve space for the PC placeholder */
+  gum_arm_writer_put_sub_reg_u16 (cw, ARM_REG_SP, 4);
 
   /*
    * Now that the context structure has been pushed onto the stack, we store the
@@ -3313,18 +3313,6 @@ gum_exec_ctx_write_arm_prolog (GumExecCtx * ctx,
    */
   gum_arm_writer_put_ands_reg_reg_imm (cw, ARM_REG_R0, ARM_REG_SP, 7);
   gum_arm_writer_put_sub_reg_reg_reg (cw, ARM_REG_SP, ARM_REG_SP, ARM_REG_R0);
-
-  if ((cpu_features & GUM_CPU_VFP3) != 0)
-  {
-    /* vpush {q8-q15} */
-    gum_arm_writer_put_instruction (cw, 0xed6d0b20);
-  }
-
-  if ((cpu_features & GUM_CPU_VFP2) != 0)
-  {
-    /* vpush {q0-q3} */
-    gum_arm_writer_put_instruction (cw, 0xed2d0b10);
-  }
 }
 
 static void
@@ -3332,34 +3320,47 @@ gum_exec_ctx_write_thumb_prolog (GumExecCtx * ctx,
                                  GumThumbWriter * cw)
 {
   const GumCpuFeatures cpu_features = ctx->stalker->cpu_features;
-  gint immediate_for_sp = 0;
 
   gum_thumb_writer_put_push_regs (cw, 9,
       ARM_REG_R0, ARM_REG_R1, ARM_REG_R2,
       ARM_REG_R3, ARM_REG_R4, ARM_REG_R5,
       ARM_REG_R6, ARM_REG_R7, ARM_REG_LR);
-  immediate_for_sp += 9 * 4;
-
-  gum_thumb_writer_put_push_regs (cw, 5,
-      ARM_REG_R8, ARM_REG_R9, ARM_REG_R10,
-      ARM_REG_R11, ARM_REG_R12);
-  immediate_for_sp += 5 * 4;
 
   /*
    * Note that we stash the CPSR (flags) here first since the Thumb instruction
-   * set doesn't support short form instructions for SUB. Hence, the calculation
-   * for the adjusted SP below is actually a SUBS and will clobber the flags.
+   * set doesn't support short form instructions for SUB. Hence, the ADD/SUB
+   * instructions below where the destination is not SP are actually ADDS/SUBS
+   * and will clobber the flags.
    */
-  gum_thumb_writer_put_mov_reg_cpsr (cw, ARM_REG_R0);
+  gum_thumb_writer_put_mov_reg_cpsr (cw, ARM_REG_R5);
+  gum_thumb_writer_put_add_reg_reg_imm (cw, ARM_REG_R4, ARM_REG_SP, 9 * 4);
 
-  gum_thumb_writer_put_sub_reg_reg_reg (cw, ARM_REG_R1, ARM_REG_R1,
-      ARM_REG_R1);
+  if ((cpu_features & GUM_CPU_VFP2) != 0)
+  {
+    if ((cpu_features & GUM_CPU_VFPD32) != 0)
+    {
+      gum_thumb_writer_put_sub_reg_imm (cw, ARM_REG_SP, 4);
+      gum_thumb_writer_put_vpush_range (cw, ARM_REG_Q8, ARM_REG_Q15);
+    }
+    else
+    {
+      gum_thumb_writer_put_sub_reg_imm (cw, ARM_REG_SP,
+          (8 * sizeof (GumArmVectorReg)) + 4);
+    }
 
-  gum_thumb_writer_put_add_reg_reg_imm (cw, ARM_REG_R2, ARM_REG_SP,
-      immediate_for_sp);
+    gum_thumb_writer_put_vpush_range (cw, ARM_REG_Q0, ARM_REG_Q7);
+  }
+  else
+  {
+    gum_thumb_writer_put_sub_reg_imm (cw, ARM_REG_SP,
+        (16 * sizeof (GumArmVectorReg)) + 4);
+  }
 
-  gum_thumb_writer_put_push_regs (cw, 3,
-      ARM_REG_R0, ARM_REG_R1, ARM_REG_R2);
+  gum_thumb_writer_put_push_regs (cw, 7,
+      ARM_REG_R4, ARM_REG_R5,
+      ARM_REG_R8, ARM_REG_R9, ARM_REG_R10, ARM_REG_R11, ARM_REG_R12);
+
+  gum_thumb_writer_put_sub_reg_imm (cw, ARM_REG_SP, 4);
 
   gum_thumb_writer_put_mov_reg_reg (cw, ARM_REG_R10, ARM_REG_SP);
 
@@ -3378,18 +3379,6 @@ gum_exec_ctx_write_thumb_prolog (GumExecCtx * ctx,
   gum_thumb_writer_put_and_reg_reg_imm (cw, ARM_REG_R0, ARM_REG_SP, 7);
   gum_thumb_writer_put_sub_reg_reg_imm (cw, ARM_REG_SP, ARM_REG_SP, 8);
   gum_thumb_writer_put_add_reg_reg_reg (cw, ARM_REG_SP, ARM_REG_SP, ARM_REG_R0);
-
-  if ((cpu_features & GUM_CPU_VFP3) != 0)
-  {
-    /* vpush {q8-q15} */
-    gum_thumb_writer_put_instruction_wide (cw, 0xed6d, 0x0b20);
-  }
-
-  if ((cpu_features & GUM_CPU_VFP2) != 0)
-  {
-    /* vpush {q0-q3} */
-    gum_thumb_writer_put_instruction_wide (cw, 0xed2d, 0x0b10);
-  }
 }
 
 static void
@@ -3397,18 +3386,6 @@ gum_exec_ctx_write_arm_epilog (GumExecCtx * ctx,
                                GumArmWriter * cw)
 {
   const GumCpuFeatures cpu_features = ctx->stalker->cpu_features;
-
-  if ((cpu_features & GUM_CPU_VFP2) != 0)
-  {
-    /* vpop {q0-q3} */
-    gum_arm_writer_put_instruction (cw, 0xecbd0b10);
-  }
-
-  if ((cpu_features & GUM_CPU_VFP3) != 0)
-  {
-    /* vpop {q8-q15} */
-    gum_arm_writer_put_instruction (cw, 0xecfd0b20);
-  }
 
   /*
    * We know that the context structure was at the top of the stack at the end
@@ -3419,16 +3396,39 @@ gum_exec_ctx_write_arm_epilog (GumExecCtx * ctx,
    */
   gum_arm_writer_put_mov_reg_reg (cw, ARM_REG_SP, ARM_REG_R10);
 
-  gum_arm_writer_put_pop_registers (cw, 3,
-      ARM_REG_R0, ARM_REG_R1, ARM_REG_R2);
+  gum_arm_writer_put_ldr_reg_reg_offset (cw, ARM_REG_R5, ARM_REG_SP,
+      G_STRUCT_OFFSET (GumCpuContext, cpsr));
 
-  gum_arm_writer_put_mov_cpsr_reg (cw, ARM_REG_R0);
+  /* Skip PC, SP, and CPSR */
+  gum_arm_writer_put_add_reg_u16 (cw, ARM_REG_SP, 3 * 4);
 
-  gum_arm_writer_put_pop_registers (cw, 5,
-      ARM_REG_R8, ARM_REG_R9, ARM_REG_R10,
-      ARM_REG_R11, ARM_REG_R12);
+  gum_arm_writer_put_pop_regs (cw, 5,
+      ARM_REG_R8, ARM_REG_R9, ARM_REG_R10, ARM_REG_R11, ARM_REG_R12);
 
-  gum_arm_writer_put_pop_registers (cw, 9,
+  if ((cpu_features & GUM_CPU_VFP2) != 0)
+  {
+    gum_arm_writer_put_vpop_range (cw, ARM_REG_Q0, ARM_REG_Q7);
+
+    if ((cpu_features & GUM_CPU_VFPD32) != 0)
+    {
+      gum_arm_writer_put_vpop_range (cw, ARM_REG_Q8, ARM_REG_Q15);
+      gum_arm_writer_put_add_reg_u16 (cw, ARM_REG_SP, 4);
+    }
+    else
+    {
+      gum_arm_writer_put_add_reg_u16 (cw, ARM_REG_SP,
+          (8 * sizeof (GumArmVectorReg)) + 4);
+    }
+  }
+  else
+  {
+    gum_arm_writer_put_add_reg_u16 (cw, ARM_REG_SP,
+        (16 * sizeof (GumArmVectorReg)) + 4);
+  }
+
+  gum_arm_writer_put_mov_cpsr_reg (cw, ARM_REG_R5);
+
+  gum_arm_writer_put_pop_regs (cw, 9,
       ARM_REG_R0, ARM_REG_R1, ARM_REG_R2,
       ARM_REG_R3, ARM_REG_R4, ARM_REG_R5,
       ARM_REG_R6, ARM_REG_R7, ARM_REG_LR);
@@ -3440,28 +3440,38 @@ gum_exec_ctx_write_thumb_epilog (GumExecCtx * ctx,
 {
   const GumCpuFeatures cpu_features = ctx->stalker->cpu_features;
 
-  if ((cpu_features & GUM_CPU_VFP2) != 0)
-  {
-    /* vpop {q0-q3} */
-    gum_thumb_writer_put_instruction_wide (cw, 0xecbd, 0x0b10);
-  }
-
-  if ((cpu_features & GUM_CPU_VFP3) != 0)
-  {
-    /* vpop {q8-q15} */
-    gum_thumb_writer_put_instruction_wide (cw, 0xecfd, 0x0b20);
-  }
-
   gum_thumb_writer_put_mov_reg_reg (cw, ARM_REG_SP, ARM_REG_R10);
 
-  gum_thumb_writer_put_pop_regs (cw, 3,
-      ARM_REG_R0, ARM_REG_R1, ARM_REG_R2);
+  gum_thumb_writer_put_ldr_reg_reg_offset (cw, ARM_REG_R5, ARM_REG_SP,
+      G_STRUCT_OFFSET (GumCpuContext, cpsr));
 
-  gum_thumb_writer_put_mov_cpsr_reg (cw, ARM_REG_R0);
+  gum_thumb_writer_put_add_reg_imm (cw, ARM_REG_SP, 3 * 4);
 
   gum_thumb_writer_put_pop_regs (cw, 5,
-      ARM_REG_R8, ARM_REG_R9, ARM_REG_R10,
-      ARM_REG_R11, ARM_REG_R12);
+      ARM_REG_R8, ARM_REG_R9, ARM_REG_R10, ARM_REG_R11, ARM_REG_R12);
+
+  if ((cpu_features & GUM_CPU_VFP2) != 0)
+  {
+    gum_thumb_writer_put_vpop_range (cw, ARM_REG_Q0, ARM_REG_Q7);
+
+    if ((cpu_features & GUM_CPU_VFPD32) != 0)
+    {
+      gum_thumb_writer_put_vpop_range (cw, ARM_REG_Q8, ARM_REG_Q15);
+      gum_thumb_writer_put_add_reg_imm (cw, ARM_REG_SP, 4);
+    }
+    else
+    {
+      gum_thumb_writer_put_add_reg_imm (cw, ARM_REG_SP,
+          (8 * sizeof (GumArmVectorReg)) + 4);
+    }
+  }
+  else
+  {
+    gum_thumb_writer_put_add_reg_imm (cw, ARM_REG_SP,
+        (16 * sizeof (GumArmVectorReg)) + 4);
+  }
+
+  gum_thumb_writer_put_mov_cpsr_reg (cw, ARM_REG_R5);
 
   gum_thumb_writer_put_pop_regs (cw, 9,
       ARM_REG_R0, ARM_REG_R1, ARM_REG_R2,
@@ -3490,7 +3500,7 @@ gum_exec_ctx_write_arm_invalidator (GumExecCtx * ctx,
       GUM_ARG_REGISTER, ARM_REG_LR);
 
   gum_exec_ctx_write_arm_epilog (ctx, cw);
-  gum_arm_writer_put_pop_registers (cw, 1, ARM_REG_LR);
+  gum_arm_writer_put_pop_regs (cw, 1, ARM_REG_LR);
 
   gum_exec_block_write_arm_exec_generated_code (cw, ctx);
 }
@@ -4074,7 +4084,7 @@ gum_exec_block_invalidate (GumExecBlock * block)
 
     gum_arm_writer_reset (cw, block->code_start);
 
-    gum_arm_writer_put_push_registers (cw, 1, ARM_REG_LR);
+    gum_arm_writer_put_push_regs (cw, 1, ARM_REG_LR);
     gum_arm_writer_put_bl_imm (cw,
         GUM_ADDRESS (block->code_slab->arm_invalidator));
     gum_arm_writer_put_bytes (cw, (guint8 *) &block, sizeof (GumExecBlock *));
@@ -4417,7 +4427,7 @@ gum_exec_block_virtualize_arm_svc_insn (GumExecBlock * block,
     gconstpointer not_cloned_child = cw->code + 1;
 
     /* Save the flags */
-    gum_arm_writer_put_push_registers (cw, 1, ARM_REG_R1);
+    gum_arm_writer_put_push_regs (cw, 1, ARM_REG_R1);
     gum_arm_writer_put_mov_reg_cpsr (cw, ARM_REG_R1);
 
     /* Check the SVC number */
@@ -4430,20 +4440,20 @@ gum_exec_block_virtualize_arm_svc_insn (GumExecBlock * block,
 
     /* Restore the flags */
     gum_arm_writer_put_mov_cpsr_reg (cw, ARM_REG_R1);
-    gum_arm_writer_put_pop_registers (cw, 1, ARM_REG_R1);
+    gum_arm_writer_put_pop_regs (cw, 1, ARM_REG_R1);
 
     /* Vector to the original next instruction */
-    gum_arm_writer_put_push_registers (cw, 2, ARM_REG_R0, ARM_REG_PC);
+    gum_arm_writer_put_push_regs (cw, 2, ARM_REG_R0, ARM_REG_PC);
     gum_arm_writer_put_ldr_reg_address (cw, ARM_REG_R0,
         GUM_ADDRESS (gc->instruction->end));
     gum_arm_writer_put_str_reg_reg_offset (cw, ARM_REG_R0, ARM_REG_SP, 4);
-    gum_arm_writer_put_pop_registers (cw, 2, ARM_REG_R0, ARM_REG_PC);
+    gum_arm_writer_put_pop_regs (cw, 2, ARM_REG_R0, ARM_REG_PC);
 
     gum_arm_writer_put_label (cw, not_cloned_child);
 
     /* Restore the flags */
     gum_arm_writer_put_mov_cpsr_reg (cw, ARM_REG_R1);
-    gum_arm_writer_put_pop_registers (cw, 1, ARM_REG_R1);
+    gum_arm_writer_put_pop_regs (cw, 1, ARM_REG_R1);
   }
 #endif
 }
@@ -4592,9 +4602,9 @@ gum_exec_block_write_arm_handle_kuser_helper (GumExecBlock * block,
    * documentation states that all of the input and output make use of registers
    * rather than the stack.
    */
-  gum_arm_writer_put_push_registers (cw, 1, ARM_REG_LR);
+  gum_arm_writer_put_push_regs (cw, 1, ARM_REG_LR);
   gum_arm_writer_put_call_reg (cw, ARM_REG_R12);
-  gum_arm_writer_put_pop_registers (cw, 1, ARM_REG_LR);
+  gum_arm_writer_put_pop_regs (cw, 1, ARM_REG_LR);
 
   gum_exec_block_arm_open_prolog (block, gc);
 
@@ -5148,13 +5158,13 @@ gum_exec_block_write_arm_exec_generated_code (GumArmWriter * cw,
    * resume_at before we subsequently pop both registers. This allows us to
    * branch to an arbitrary address without clobbering any registers.
    */
-  gum_arm_writer_put_push_registers (cw, 2, ARM_REG_R0, ARM_REG_PC);
+  gum_arm_writer_put_push_regs (cw, 2, ARM_REG_R0, ARM_REG_PC);
   gum_arm_writer_put_ldr_reg_address (cw, ARM_REG_R0,
       GUM_ADDRESS (&ctx->resume_at));
   gum_arm_writer_put_ldr_reg_reg_offset (cw, ARM_REG_R0, ARM_REG_R0, 0);
 
   gum_arm_writer_put_str_reg_reg_offset (cw, ARM_REG_R0, ARM_REG_SP, 4);
-  gum_arm_writer_put_pop_registers (cw, 2, ARM_REG_R0, ARM_REG_PC);
+  gum_arm_writer_put_pop_regs (cw, 2, ARM_REG_R0, ARM_REG_PC);
 }
 
 static void

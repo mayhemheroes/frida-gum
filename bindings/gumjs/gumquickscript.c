@@ -7,6 +7,7 @@
 #include "gumquickscript.h"
 
 #include "gumquickapiresolver.h"
+#include "gumquickchecksum.h"
 #include "gumquickcmodule.h"
 #include "gumquickcoderelocator.h"
 #include "gumquickcodewriter.h"
@@ -61,6 +62,7 @@ struct _GumQuickScript
   GumQuickProcess process;
   GumQuickThread thread;
   GumQuickFile file;
+  GumQuickChecksum checksum;
   GumQuickStream stream;
   GumQuickSocket socket;
 #ifdef HAVE_SQLITE
@@ -162,6 +164,12 @@ static void gum_quick_script_post (GumScript * script, const gchar * message,
 static void gum_quick_script_do_post (GumPostData * d);
 static void gum_quick_post_data_free (GumPostData * d);
 
+static void gum_quick_script_set_debug_message_handler (GumScript * backend,
+    GumScriptDebugMessageHandler handler, gpointer data,
+    GDestroyNotify data_destroy);
+static void gum_quick_script_post_debug_message (GumScript * backend,
+    const gchar * message);
+
 static GumStalker * gum_quick_script_get_stalker (GumScript * script);
 
 static void gum_quick_script_emit (GumQuickScript * self,
@@ -220,6 +228,9 @@ gum_quick_script_iface_init (gpointer g_iface,
 
   iface->set_message_handler = gum_quick_script_set_message_handler;
   iface->post = gum_quick_script_post;
+
+  iface->set_debug_message_handler = gum_quick_script_set_debug_message_handler;
+  iface->post_debug_message = gum_quick_script_post_debug_message;
 
   iface->get_stalker = gum_quick_script_get_stalker;
 }
@@ -386,6 +397,7 @@ gum_quick_script_create_context (GumQuickScript * self,
   _gum_quick_process_init (&self->process, global_obj, &self->module, core);
   _gum_quick_thread_init (&self->thread, global_obj, core);
   _gum_quick_file_init (&self->file, global_obj, core);
+  _gum_quick_checksum_init (&self->checksum, global_obj, core);
   _gum_quick_stream_init (&self->stream, global_obj, core);
   _gum_quick_socket_init (&self->socket, global_obj, &self->stream, core);
 #ifdef HAVE_SQLITE
@@ -448,6 +460,7 @@ gum_quick_script_destroy_context (GumQuickScript * self)
 #endif
     _gum_quick_socket_dispose (&self->socket);
     _gum_quick_stream_dispose (&self->stream);
+    _gum_quick_checksum_dispose (&self->checksum);
     _gum_quick_file_dispose (&self->file);
     _gum_quick_thread_dispose (&self->thread);
     _gum_quick_process_dispose (&self->process);
@@ -489,6 +502,7 @@ gum_quick_script_destroy_context (GumQuickScript * self)
 #endif
   _gum_quick_socket_finalize (&self->socket);
   _gum_quick_stream_finalize (&self->stream);
+  _gum_quick_checksum_finalize (&self->checksum);
   _gum_quick_file_finalize (&self->file);
   _gum_quick_thread_finalize (&self->thread);
   _gum_quick_process_finalize (&self->process);
@@ -773,6 +787,23 @@ gum_quick_post_data_free (GumPostData * d)
   g_slice_free (GumPostData, d);
 }
 
+static void
+gum_quick_script_set_debug_message_handler (
+    GumScript * backend,
+    GumScriptDebugMessageHandler handler,
+    gpointer data,
+    GDestroyNotify data_destroy)
+{
+  if (data_destroy != NULL)
+    data_destroy (data);
+}
+
+static void
+gum_quick_script_post_debug_message (GumScript * backend,
+                                     const gchar * message)
+{
+}
+
 static GumStalker *
 gum_quick_script_get_stalker (GumScript * script)
 {
@@ -810,10 +841,7 @@ gum_quick_script_do_emit (GumEmitData * d)
   GumQuickScript * self = d->script;
 
   if (self->message_handler != NULL)
-  {
-    self->message_handler (GUM_SCRIPT (self), d->message, d->data,
-        self->message_handler_data);
-  }
+    self->message_handler (d->message, d->data, self->message_handler_data);
 
   return FALSE;
 }
