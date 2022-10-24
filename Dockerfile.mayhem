@@ -1,0 +1,20 @@
+FROM --platform=linux/amd64 ubuntu:22.04 as builder
+
+RUN apt-get update
+RUN DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential curl git lib32stdc++-9-dev \
+    libc6-dev-i386 nodejs npm python3-dev python3-pip meson
+
+ADD . /repo
+WORKDIR /repo
+RUN meson build -Ddiet=false
+WORKDIR /repo/build
+RUN ninja
+
+RUN mkdir -p /deps
+RUN ldd /repo/build/tools/gum-graft | tr -s '[:blank:]' '\n' | grep '^/' | xargs -I % sh -c 'cp % /deps;'
+
+FROM ubuntu:22.04 as package
+
+COPY --from=builder /deps /deps
+COPY --from=builder /repo/build/tools/gum-graft /repo/build/tools/gum-graft
+ENV LD_LIBRARY_PATH=/deps
