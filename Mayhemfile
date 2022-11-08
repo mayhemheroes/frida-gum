@@ -1,0 +1,5 @@
+project: frida-gum
+target: gum-graft
+
+cmds:
+  - cmd: /repo/build/tools/gum-graft @@
